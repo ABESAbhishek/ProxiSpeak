@@ -1,8 +1,9 @@
 /**
  * ProxiSpeak — Shared Types and Signaling Protocol
  * 
- * This file defines the shared contract between the frontend client and the backend server.
- * Specifically for WebRTC audio foundation (Member 4) and Backend coordination (Member 2).
+ * This file defines the shared contract between frontend clients and the backend server.
+ * Specifically for WebRTC audio foundation (Member 4), Backend architecture (Member 2),
+ * and Spatial physics/avatars (Member 1 & 3).
  */
 
 // -------------------------------------------------------------
@@ -31,7 +32,7 @@ export interface WebRTCIceCandidatePayload {
 }
 
 // -------------------------------------------------------------
-// Geospatial World & Presence Events (Coordinated with Member 2 / 3)
+// Geospatial World & Presence Events (Member 2 Backend Architecture)
 // -------------------------------------------------------------
 
 export interface Position3D {
@@ -44,25 +45,44 @@ export interface UserProfile {
   id: string;
   username: string;
   position: Position3D;
+  roomId?: string;
   isMuted?: boolean;
+  isSpeaking?: boolean;
+  joinedAt?: number;
 }
 
 export interface UserJoinPayload {
   username: string;
   position?: Position3D;
+  roomId?: string;
 }
 
 export interface UserLeftPayload {
   userId: string;
+  roomId?: string;
 }
 
 export interface WorldStatePayload {
+  roomId: string;
   users: Record<string, UserProfile>;
 }
 
 export interface PositionUpdatePayload {
   userId: string;
   position: Position3D;
+  roomId?: string;
+}
+
+export interface UserProfileUpdatePayload {
+  userId: string;
+  isMuted?: boolean;
+  isSpeaking?: boolean;
+}
+
+export interface RoomInfo {
+  id: string;
+  name: string;
+  userCount: number;
 }
 
 // -------------------------------------------------------------

@@ -3,29 +3,29 @@ import { Server, Socket } from 'socket.io';
 export interface WebRTCOfferPayload {
   senderId: string;
   targetId: string;
-  sdp: any;
+  sdp: RTCSessionDescriptionInit;
 }
 
 export interface WebRTCAnswerPayload {
   senderId: string;
   targetId: string;
-  sdp: any;
+  sdp: RTCSessionDescriptionInit;
 }
 
 export interface WebRTCIceCandidatePayload {
   senderId: string;
   targetId: string;
-  candidate: any;
+  candidate: RTCIceCandidateInit;
 }
 
 /**
  * Registers WebRTC signaling handlers for a connected socket.
- * Uses the agreed exact event names:
+ * Implements the exact 3 agreed events:
  * 1. "webrtc:offer"
  * 2. "webrtc:answer"
  * 3. "webrtc:ice-candidate"
  * 
- * Designed for clean coordination with Member 2 (Backend).
+ * Part of Member 2 & Member 4 backend signaling relay integration.
  */
 export function registerWebRTCSignaling(io: Server, socket: Socket): void {
   // 1. "webrtc:offer"
@@ -35,11 +35,20 @@ export function registerWebRTCSignaling(io: Server, socket: Socket): void {
       return;
     }
 
+    const targetSocket = io.sockets.sockets.get(payload.targetId);
+    if (!targetSocket) {
+      console.warn(`[Signaling] Target peer ${payload.targetId} is not connected for offer.`);
+      socket.emit('webrtc:error', {
+        message: `Peer ${payload.targetId} is no longer connected.`,
+        targetId: payload.targetId
+      });
+      return;
+    }
+
     console.log(`[Signaling] Relaying offer: ${socket.id} -> ${payload.targetId}`);
-    // Forward the offer directly to the intended peer
     io.to(payload.targetId).emit('webrtc:offer', {
       ...payload,
-      senderId: socket.id // Ensure senderId matches authenticated socket
+      senderId: socket.id // Ensure authenticated sender
     });
   });
 
@@ -50,8 +59,13 @@ export function registerWebRTCSignaling(io: Server, socket: Socket): void {
       return;
     }
 
+    const targetSocket = io.sockets.sockets.get(payload.targetId);
+    if (!targetSocket) {
+      console.warn(`[Signaling] Target peer ${payload.targetId} is not connected for answer.`);
+      return;
+    }
+
     console.log(`[Signaling] Relaying answer: ${socket.id} -> ${payload.targetId}`);
-    // Forward the answer directly to the intended peer
     io.to(payload.targetId).emit('webrtc:answer', {
       ...payload,
       senderId: socket.id
@@ -65,8 +79,12 @@ export function registerWebRTCSignaling(io: Server, socket: Socket): void {
       return;
     }
 
+    const targetSocket = io.sockets.sockets.get(payload.targetId);
+    if (!targetSocket) {
+      return; // Target already disconnected, drop candidate silently
+    }
+
     console.log(`[Signaling] Relaying ICE candidate: ${socket.id} -> ${payload.targetId}`);
-    // Forward ICE candidate to the intended peer
     io.to(payload.targetId).emit('webrtc:ice-candidate', {
       ...payload,
       senderId: socket.id
