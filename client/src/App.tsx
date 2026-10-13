@@ -5,31 +5,43 @@ import { AudioControls } from './components/AudioControls';
 import { PeerList } from './components/PeerList';
 import { SignalingLog } from './components/SignalingLog';
 import { ProximitySimulator } from './components/ProximitySimulator';
-import { Headphones, Radio, GitBranch, Sparkles } from 'lucide-react';
+import { Headphones, Radio, GitBranch, Sparkles, Activity } from 'lucide-react';
 
 export const App: React.FC = () => {
-  // Step 2: Microphone access hook
+  // Task 1: Microphone permissions, hardware devices & self-test
   const {
     stream: localStream,
     status: micStatus,
     isMuted,
     audioLevel,
+    frequencyBands,
+    permissionState,
+    availableDevices,
+    selectedDeviceId,
+    setSelectedDeviceId,
+    isSelfTesting,
+    selfTestSecondsRemaining,
+    testAudioUrl,
+    startSelfTest,
+    clearSelfTest,
     errorMessage: micError,
     startMicrophone,
     stopMicrophone,
     toggleMute
   } = useMicrophone();
 
-  // Step 3 & 4: WebRTC and signaling hook
+  // Task 2, 3, & 4: WebRTC connection, Member 2 signaling, and Spatial audio
   const {
     localSocketId,
     isConnected,
+    signalingLatencyMs,
     peers,
     signalingLogs,
     clearLogs,
     startCall,
     closeCall,
-    setPeerVolume
+    setPeerVolume,
+    setPeerSpatial
   } = useWebRTCAudio(localStream);
 
   return (
@@ -56,6 +68,13 @@ export const App: React.FC = () => {
               <span>feat/webrtc-foundation</span>
             </div>
 
+            {signalingLatencyMs !== null && (
+              <div className="hidden md:flex items-center gap-1.5 px-2.5 py-1 bg-slate-800/80 rounded-lg border border-slate-700/60 text-xs font-mono text-cyan-300">
+                <Activity className="w-3.5 h-3.5 text-cyan-400" />
+                <span>{signalingLatencyMs}ms</span>
+              </div>
+            )}
+
             <div className={`flex items-center gap-1.5 px-3 py-1 rounded-lg border text-xs font-mono ${
               isConnected
                 ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
@@ -80,9 +99,10 @@ export const App: React.FC = () => {
               <div>
                 <h3 className="text-sm font-semibold text-white">How to Test the Two-Browser Audio Connection</h3>
                 <p className="text-xs text-slate-300 mt-0.5 leading-relaxed">
-                  1. Click <strong className="text-white">Start Microphone</strong> below &bull; 
+                  1. Click <strong className="text-white">Start Microphone</strong> (or <strong className="text-white">Run Self-Test</strong> to verify audio) &bull; 
                   2. Open a second tab or incognito window &bull; 
-                  3. In either tab, click <strong className="text-white">Call Peer</strong> to exchange <code className="text-indigo-300 font-mono">webrtc:offer</code>, <code className="text-indigo-300 font-mono">webrtc:answer</code>, & <code className="text-indigo-300 font-mono">webrtc:ice-candidate</code>.
+                  3. In either tab, click <strong className="text-white">Call Peer</strong> to exchange <code className="text-indigo-300 font-mono">webrtc:offer</code>, <code className="text-indigo-300 font-mono">webrtc:answer</code>, & <code className="text-indigo-300 font-mono">webrtc:ice-candidate</code> &bull; 
+                  4. Drag your avatar on the soundstage to test proximity falloff and stereo panning!
                 </p>
               </div>
             </div>
@@ -103,6 +123,16 @@ export const App: React.FC = () => {
               status={micStatus}
               isMuted={isMuted}
               audioLevel={audioLevel}
+              frequencyBands={frequencyBands}
+              permissionState={permissionState}
+              availableDevices={availableDevices}
+              selectedDeviceId={selectedDeviceId}
+              onSelectDevice={setSelectedDeviceId}
+              isSelfTesting={isSelfTesting}
+              selfTestSecondsRemaining={selfTestSecondsRemaining}
+              testAudioUrl={testAudioUrl}
+              onStartSelfTest={startSelfTest}
+              onClearSelfTest={clearSelfTest}
               errorMessage={micError}
               onStart={startMicrophone}
               onStop={stopMicrophone}
@@ -111,7 +141,7 @@ export const App: React.FC = () => {
 
             <ProximitySimulator
               peers={peers}
-              onSetVolume={setPeerVolume}
+              onSetSpatial={setPeerSpatial}
             />
           </div>
 
@@ -128,6 +158,7 @@ export const App: React.FC = () => {
 
             <SignalingLog
               logs={signalingLogs}
+              signalingLatencyMs={signalingLatencyMs}
               onClear={clearLogs}
             />
           </div>

@@ -13,11 +13,21 @@ let clientBId = '';
 let offerReceived = false;
 let answerReceived = false;
 let iceReceived = false;
+let pongReceived = false;
 
 clientA.on('connect', () => {
   clientAId = clientA.id;
   console.log(`[PASS] Client A connected with socket ID: ${clientAId}`);
   clientA.emit('user:join', { username: 'Peer_Alpha' });
+
+  // Test signaling ping-pong
+  clientA.emit('signaling:ping', { timestamp: Date.now() });
+});
+
+clientA.on('signaling:pong', (payload) => {
+  const latency = Date.now() - payload.clientTimestamp;
+  console.log(`[PASS] Client A received 'signaling:pong' (Latency: ${latency}ms)`);
+  pongReceived = true;
 });
 
 clientB.on('connect', () => {
@@ -65,10 +75,11 @@ clientB.on('webrtc:ice-candidate', (payload) => {
     iceReceived = true;
 
     console.log('\n======================================================');
-    console.log('  ALL 3 WEBRTC SIGNALING EVENTS VERIFIED SUCCESSFULLY!');
+    console.log('  ALL WEBRTC SIGNALING EVENTS VERIFIED SUCCESSFULLY!');
     console.log(`  1. webrtc:offer         -> ${offerReceived ? 'VERIFIED' : 'FAILED'}`);
     console.log(`  2. webrtc:answer        -> ${answerReceived ? 'VERIFIED' : 'FAILED'}`);
     console.log(`  3. webrtc:ice-candidate -> ${iceReceived ? 'VERIFIED' : 'FAILED'}`);
+    console.log(`  4. signaling:pong (RTT) -> ${pongReceived ? 'VERIFIED' : 'FAILED'}`);
     console.log('======================================================\n');
 
     clientA.disconnect();

@@ -112,5 +112,27 @@ export interface RemotePeerAudio {
   connectionState: WebRTCConnectionState;
   /** Volume level between 0.0 (silent) and 1.0 (full volume), ready for Week 2 proximity calculation */
   volume: number;
+  /** Stereo pan between -1.0 (full left) and 1.0 (full right) */
+  pan?: number;
   isMuted: boolean;
+  stats?: PeerAudioStats;
 }
+
+export interface PeerAudioStats {
+  peerId: string;
+  rttMs: number;
+  jitterMs: number;
+  packetsLost: number;
+  audioBitrateKbps: number;
+  codec: string;
+}
+
+export interface SignalingPingPayload {
+  timestamp: number;
+}
+
+export interface SignalingPongPayload {
+  clientTimestamp: number;
+  serverTimestamp: number;
+}
+

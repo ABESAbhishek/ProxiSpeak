@@ -90,4 +90,13 @@ export function registerWebRTCSignaling(io: Server, socket: Socket): void {
       senderId: socket.id
     });
   });
+
+  // 4. "signaling:ping" for real-time telemetry and latency measurement
+  socket.on('signaling:ping', (payload: { timestamp: number }) => {
+    socket.emit('signaling:pong', {
+      clientTimestamp: payload?.timestamp || Date.now(),
+      serverTimestamp: Date.now()
+    });
+  });
 }
+

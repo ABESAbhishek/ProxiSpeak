@@ -7,7 +7,17 @@ export interface UseMicrophoneResult {
   isMuted: boolean;
   errorMessage: string | null;
   audioLevel: number;
-  startMicrophone: () => Promise<MediaStream | null>;
+  frequencyBands: number[];
+  permissionState: PermissionState | 'unknown';
+  availableDevices: MediaDeviceInfo[];
+  selectedDeviceId: string;
+  setSelectedDeviceId: (id: string) => void;
+  isSelfTesting: boolean;
+  selfTestSecondsRemaining: number;
+  testAudioUrl: string | null;
+  startSelfTest: () => Promise<void>;
+  clearSelfTest: () => void;
+  startMicrophone: (deviceId?: string) => Promise<MediaStream | null>;
   stopMicrophone: () => void;
   toggleMute: () => void;
 }
@@ -18,13 +28,65 @@ export function useMicrophone(): UseMicrophoneResult {
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [audioLevel, setAudioLevel] = useState<number>(0);
+  const [frequencyBands, setFrequencyBands] = useState<number[]>([0, 0, 0, 0, 0, 0, 0, 0]);
+  const [permissionState, setPermissionState] = useState<PermissionState | 'unknown'>('unknown');
+  const [availableDevices, setAvailableDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
+  
+  // Microphone Self-Test / Loopback test state
+  const [isSelfTesting, setIsSelfTesting] = useState<boolean>(false);
+  const [selfTestSecondsRemaining, setSelfTestSecondsRemaining] = useState<number>(0);
+  const [testAudioUrl, setTestAudioUrl] = useState<string | null>(null);
 
   const streamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animationFrameRef = useRef<number | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
 
-  // Audio level monitoring using Web Audio API
+  // 1. Query browser permission status via Permissions API
+  const checkPermissionState = useCallback(async () => {
+    try {
+      if (navigator.permissions && navigator.permissions.query) {
+        const result = await navigator.permissions.query({ name: 'microphone' as PermissionName });
+        setPermissionState(result.state);
+        result.onchange = () => {
+          setPermissionState(result.state);
+        };
+      }
+    } catch {
+      setPermissionState('unknown');
+    }
+  }, []);
+
+  // 2. Enumerate available audio input devices
+  const refreshDevices = useCallback(async () => {
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+      const allDevices = await navigator.mediaDevices.enumerateDevices();
+      const audioInputs = allDevices.filter((d) => d.kind === 'audioinput');
+      setAvailableDevices(audioInputs);
+      if (audioInputs.length > 0 && !selectedDeviceId) {
+        setSelectedDeviceId(audioInputs[0].deviceId);
+      }
+    } catch (err) {
+      console.warn('[Microphone] Could not enumerate audio devices:', err);
+    }
+  }, [selectedDeviceId]);
+
+  useEffect(() => {
+    checkPermissionState();
+    refreshDevices();
+
+    if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+      navigator.mediaDevices.addEventListener('devicechange', refreshDevices);
+      return () => {
+        navigator.mediaDevices.removeEventListener('devicechange', refreshDevices);
+      };
+    }
+  }, [checkPermissionState, refreshDevices]);
+
+  // Audio level and 8-band frequency monitoring using Web Audio API
   const startLevelMeter = useCallback((mediaStream: MediaStream) => {
     try {
       const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
@@ -32,13 +94,14 @@ export function useMicrophone(): UseMicrophoneResult {
       audioContextRef.current = audioCtx;
 
       const analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 256;
+      analyser.fftSize = 64;
       analyserRef.current = analyser;
 
       const source = audioCtx.createMediaStreamSource(mediaStream);
       source.connect(analyser);
 
-      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+      const bufferLength = analyser.frequencyBinCount;
+      const dataArray = new Uint8Array(bufferLength);
 
       const updateLevel = () => {
         if (!analyserRef.current) return;
@@ -51,6 +114,18 @@ export function useMicrophone(): UseMicrophoneResult {
         const average = sum / dataArray.length;
         const normalized = Math.min(100, Math.round((average / 128) * 100));
         setAudioLevel(normalized);
+
+        // Group into 8 frequency visualizer bands
+        const bandSize = Math.max(1, Math.floor(dataArray.length / 8));
+        const bands: number[] = [];
+        for (let b = 0; b < 8; b++) {
+          let bSum = 0;
+          for (let k = 0; k < bandSize; k++) {
+            bSum += dataArray[b * bandSize + k] || 0;
+          }
+          bands.push(Math.min(100, Math.round((bSum / bandSize / 255) * 100)));
+        }
+        setFrequencyBands(bands);
 
         animationFrameRef.current = requestAnimationFrame(updateLevel);
       };
@@ -72,6 +147,7 @@ export function useMicrophone(): UseMicrophoneResult {
     }
     analyserRef.current = null;
     setAudioLevel(0);
+    setFrequencyBands([0, 0, 0, 0, 0, 0, 0, 0]);
   }, []);
 
   /**
@@ -93,10 +169,14 @@ export function useMicrophone(): UseMicrophoneResult {
    * Requests microphone access.
    * STRICT REQUIREMENT: Only called when user clicks Start Microphone / Start Audio.
    */
-  const startMicrophone = useCallback(async (): Promise<MediaStream | null> => {
-    // If already active, return the existing stream
-    if (streamRef.current && streamRef.current.active) {
+  const startMicrophone = useCallback(async (deviceIdToUse?: string): Promise<MediaStream | null> => {
+    // If already active with the same device, return the existing stream
+    if (streamRef.current && streamRef.current.active && !deviceIdToUse) {
       return streamRef.current;
+    }
+
+    if (streamRef.current) {
+      releaseTracks();
     }
 
     setStatus('requesting');
@@ -110,12 +190,19 @@ export function useMicrophone(): UseMicrophoneResult {
     }
 
     try {
+      const targetDevice = deviceIdToUse || selectedDeviceId;
+      const audioConstraints: MediaTrackConstraints = {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+      };
+
+      if (targetDevice) {
+        audioConstraints.deviceId = { exact: targetDevice };
+      }
+
       const mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        },
+        audio: audioConstraints,
         video: false
       });
 
@@ -123,6 +210,10 @@ export function useMicrophone(): UseMicrophoneResult {
       setStream(mediaStream);
       setStatus('active');
       setIsMuted(false);
+      setPermissionState('granted');
+
+      // Refresh devices with actual hardware labels granted
+      refreshDevices();
 
       // Handle track ending unexpectedly (e.g. unplugged)
       mediaStream.getAudioTracks().forEach((track) => {
@@ -142,6 +233,7 @@ export function useMicrophone(): UseMicrophoneResult {
       if (err instanceof DOMException) {
         if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
           setStatus('denied');
+          setPermissionState('denied');
           setErrorMessage('Microphone access was denied. Please allow microphone permissions in your browser settings.');
         } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
           setStatus('error');
@@ -159,7 +251,7 @@ export function useMicrophone(): UseMicrophoneResult {
       }
       return null;
     }
-  }, [releaseTracks, startLevelMeter]);
+  }, [releaseTracks, startLevelMeter, selectedDeviceId, refreshDevices]);
 
   /**
    * Stops the microphone and releases all tracks.
@@ -189,12 +281,82 @@ export function useMicrophone(): UseMicrophoneResult {
     setStatus(newMutedState ? 'muted' : 'active');
   }, [isMuted]);
 
+  /**
+   * Hardware Loopback Test: Records a 3-second audio snippet and creates a local playback URL
+   * to verify microphone input clarity before entering a WebRTC session.
+   */
+  const startSelfTest = useCallback(async () => {
+    if (isSelfTesting) return;
+
+    // Ensure mic is running
+    let activeStream = streamRef.current;
+    if (!activeStream || !activeStream.active) {
+      activeStream = await startMicrophone();
+      if (!activeStream) return;
+    }
+
+    try {
+      setIsSelfTesting(true);
+      setSelfTestSecondsRemaining(3);
+      if (testAudioUrl) {
+        URL.revokeObjectURL(testAudioUrl);
+        setTestAudioUrl(null);
+      }
+
+      const chunks: Blob[] = [];
+      const recorder = new MediaRecorder(activeStream);
+      mediaRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          chunks.push(e.data);
+        }
+      };
+
+      recorder.onstop = () => {
+        const blob = new Blob(chunks, { type: 'audio/webm' });
+        const url = URL.createObjectURL(blob);
+        setTestAudioUrl(url);
+        setIsSelfTesting(false);
+        setSelfTestSecondsRemaining(0);
+      };
+
+      recorder.start();
+
+      let seconds = 3;
+      const timer = setInterval(() => {
+        seconds -= 1;
+        setSelfTestSecondsRemaining(seconds);
+        if (seconds <= 0) {
+          clearInterval(timer);
+          if (recorder.state === 'recording') {
+            recorder.stop();
+          }
+        }
+      }, 1000);
+    } catch (err) {
+      console.warn('[Microphone] Self-test failed:', err);
+      setIsSelfTesting(false);
+      setSelfTestSecondsRemaining(0);
+    }
+  }, [isSelfTesting, startMicrophone, testAudioUrl]);
+
+  const clearSelfTest = useCallback(() => {
+    if (testAudioUrl) {
+      URL.revokeObjectURL(testAudioUrl);
+      setTestAudioUrl(null);
+    }
+  }, [testAudioUrl]);
+
   // Clean up all tracks on component unmount
   useEffect(() => {
     return () => {
       releaseTracks();
+      if (testAudioUrl) {
+        URL.revokeObjectURL(testAudioUrl);
+      }
     };
-  }, [releaseTracks]);
+  }, [releaseTracks, testAudioUrl]);
 
   return {
     stream,
@@ -202,6 +364,16 @@ export function useMicrophone(): UseMicrophoneResult {
     isMuted,
     errorMessage,
     audioLevel,
+    frequencyBands,
+    permissionState,
+    availableDevices,
+    selectedDeviceId,
+    setSelectedDeviceId,
+    isSelfTesting,
+    selfTestSecondsRemaining,
+    testAudioUrl,
+    startSelfTest,
+    clearSelfTest,
     startMicrophone,
     stopMicrophone,
     toggleMute

@@ -44,5 +44,11 @@ export const socketService = {
   // 3. "webrtc:ice-candidate"
   sendIceCandidate(payload: WebRTCIceCandidatePayload): void {
     socket.emit('webrtc:ice-candidate', payload);
+  },
+
+  // 4. "signaling:ping" for latency monitoring
+  ping(timestamp: number = Date.now()): void {
+    socket.emit('signaling:ping', { timestamp });
   }
 };
+

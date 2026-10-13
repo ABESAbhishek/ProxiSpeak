@@ -7,6 +7,7 @@ import type {
   WebRTCIceCandidatePayload,
   WebRTCConnectionState,
   RemotePeerAudio,
+  PeerAudioStats,
   SignalingLogEntry,
   WorldStatePayload,
   UserProfile,
@@ -16,17 +17,20 @@ import type {
 export interface UseWebRTCAudioResult {
   localSocketId: string | null;
   isConnected: boolean;
+  signalingLatencyMs: number | null;
   peers: Record<string, RemotePeerAudio>;
   signalingLogs: SignalingLogEntry[];
   clearLogs: () => void;
   startCall: (peerId: string) => Promise<void>;
   closeCall: (peerId: string) => void;
   setPeerVolume: (peerId: string, volume: number) => void;
+  setPeerSpatial: (peerId: string, volume: number, pan?: number) => void;
 }
 
 export function useWebRTCAudio(localStream: MediaStream | null): UseWebRTCAudioResult {
   const [localSocketId, setLocalSocketId] = useState<string | null>(socket.id || null);
   const [isConnected, setIsConnected] = useState<boolean>(socket.connected);
+  const [signalingLatencyMs, setSignalingLatencyMs] = useState<number | null>(null);
   const [peers, setPeers] = useState<Record<string, RemotePeerAudio>>({});
   const [signalingLogs, setSignalingLogs] = useState<SignalingLogEntry[]>([]);
 
@@ -74,6 +78,7 @@ export function useWebRTCAudio(localStream: MediaStream | null): UseWebRTCAudioR
               stream,
               connectionState: existing?.connectionState || 'connecting',
               volume: existing?.volume ?? 1.0,
+              pan: existing?.pan ?? 0,
               isMuted: false
             }
           };
@@ -92,10 +97,24 @@ export function useWebRTCAudio(localStream: MediaStream | null): UseWebRTCAudioR
           };
         });
       },
+      onPeerStats: (peerId: string, stats: PeerAudioStats) => {
+        setPeers((prev) => {
+          const existing = prev[peerId];
+          if (!existing) return prev;
+          return {
+            ...prev,
+            [peerId]: {
+              ...existing,
+              stats
+            }
+          };
+        });
+      },
       onLog: (direction, type, summary, details) => {
         addLog(direction, type, summary, details);
       }
     });
+
 
     webrtcManagerRef.current = manager;
 
@@ -212,6 +231,12 @@ export function useWebRTCAudio(localStream: MediaStream | null): UseWebRTCAudioR
       }
     };
 
+    // 4. "signaling:pong" latency measurement
+    const handlePong = (payload: { clientTimestamp: number }) => {
+      const latency = Math.max(1, Date.now() - (payload.clientTimestamp || Date.now()));
+      setSignalingLatencyMs(latency);
+    };
+
     // Bind listeners
     socket.on('connect', handleConnect);
     socket.on('disconnect', handleDisconnect);
@@ -222,6 +247,7 @@ export function useWebRTCAudio(localStream: MediaStream | null): UseWebRTCAudioR
     socket.on('webrtc:offer', handleOffer);
     socket.on('webrtc:answer', handleAnswer);
     socket.on('webrtc:ice-candidate', handleIceCandidate);
+    socket.on('signaling:pong', handlePong);
 
     if (socket.connected) {
       handleConnect();
@@ -237,8 +263,19 @@ export function useWebRTCAudio(localStream: MediaStream | null): UseWebRTCAudioR
       socket.off('webrtc:offer', handleOffer);
       socket.off('webrtc:answer', handleAnswer);
       socket.off('webrtc:ice-candidate', handleIceCandidate);
+      socket.off('signaling:pong', handlePong);
     };
   }, [addLog]);
+
+  // Periodic signaling latency ping
+  useEffect(() => {
+    if (!isConnected) return;
+    socketService.ping();
+    const interval = setInterval(() => {
+      socketService.ping();
+    }, 4000);
+    return () => clearInterval(interval);
+  }, [isConnected]);
 
   const startCall = useCallback(async (peerId: string) => {
     if (webrtcManagerRef.current) {
@@ -269,14 +306,35 @@ export function useWebRTCAudio(localStream: MediaStream | null): UseWebRTCAudioR
     });
   }, []);
 
+  const setPeerSpatial = useCallback((peerId: string, volume: number, pan: number = 0) => {
+    if (webrtcManagerRef.current) {
+      webrtcManagerRef.current.setPeerSpatial(peerId, volume, pan);
+    }
+    setPeers((prev) => {
+      const existing = prev[peerId];
+      if (!existing) return prev;
+      return {
+        ...prev,
+        [peerId]: {
+          ...existing,
+          volume: Math.max(0, Math.min(1, volume)),
+          pan: Math.max(-1, Math.min(1, pan))
+        }
+      };
+    });
+  }, []);
+
   return {
     localSocketId,
     isConnected,
+    signalingLatencyMs,
     peers,
     signalingLogs,
     clearLogs,
     startCall,
     closeCall,
-    setPeerVolume
+    setPeerVolume,
+    setPeerSpatial
   };
 }
+

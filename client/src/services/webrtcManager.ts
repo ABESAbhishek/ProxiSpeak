@@ -2,8 +2,10 @@ import type {
   WebRTCOfferPayload,
   WebRTCAnswerPayload,
   WebRTCIceCandidatePayload,
-  WebRTCConnectionState
+  WebRTCConnectionState,
+  PeerAudioStats
 } from '../types';
+import { SpatialAudioGraph } from './spatialAudio';
 
 export interface WebRTCManagerCallbacks {
   onSendOffer: (payload: WebRTCOfferPayload) => void;
@@ -12,7 +14,9 @@ export interface WebRTCManagerCallbacks {
   onRemoteStream: (peerId: string, stream: MediaStream) => void;
   onConnectionStateChange: (peerId: string, state: WebRTCConnectionState) => void;
   onLog?: (direction: 'in' | 'out', type: 'webrtc:offer' | 'webrtc:answer' | 'webrtc:ice-candidate', summary: string, details?: unknown) => void;
+  onPeerStats?: (peerId: string, stats: PeerAudioStats) => void;
 }
+
 
 const RTC_CONFIG: RTCConfiguration = {
   iceServers: [
@@ -32,10 +36,15 @@ export class WebRTCManager {
   /** Buffers ICE candidates arriving before remote description is set */
   private queuedCandidates: Map<string, RTCIceCandidateInit[]> = new Map();
   private callbacks: WebRTCManagerCallbacks;
+  private spatialAudio: SpatialAudioGraph = new SpatialAudioGraph();
+  private statsInterval: number | null = null;
+  private prevBytesReceived: Map<string, { bytes: number; timestamp: number }> = new Map();
 
   constructor(callbacks: WebRTCManagerCallbacks) {
     this.callbacks = callbacks;
+    this.startStatsMonitoring();
   }
+
 
   public setLocalSocketId(id: string): void {
     this.localSocketId = id;
@@ -111,6 +120,8 @@ export class WebRTCManager {
 
       // Attach to HTMLAudioElement with auto-play
       this.attachAudioElement(peerId, stream);
+      // Connect to Web Audio API spatial panner graph
+      this.spatialAudio.attachStream(peerId, stream);
       this.callbacks.onRemoteStream(peerId, stream);
     };
 
@@ -296,6 +307,96 @@ export class WebRTCManager {
   }
 
   /**
+   * Updates spatial audio parameters: volume attenuation and stereo panning.
+   * Leverages Web Audio API GainNode and StereoPannerNode with smooth ramps.
+   */
+  public setPeerSpatial(peerId: string, volume: number, pan: number = 0): void {
+    this.setPeerVolume(peerId, volume);
+    this.spatialAudio.updateSpatialParameters(peerId, volume, pan);
+  }
+
+  /**
+   * Periodically queries RTCPeerConnection.getStats() for active audio quality metrics.
+   */
+  private startStatsMonitoring(): void {
+    if (this.statsInterval !== null) return;
+
+    this.statsInterval = window.setInterval(async () => {
+      if (this.peerConnections.size === 0 || !this.callbacks.onPeerStats) return;
+
+      for (const [peerId, pc] of this.peerConnections.entries()) {
+        if (pc.connectionState !== 'connected') continue;
+
+        try {
+          const statsReport = await pc.getStats();
+          let rttMs = 0;
+          let jitterMs = 0;
+          let packetsLost = 0;
+          let audioBitrateKbps = 0;
+          let codec = 'opus';
+
+          statsReport.forEach((report) => {
+            // Check candidate pair for RTT
+            if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+              if (report.currentRoundTripTime !== undefined) {
+                rttMs = Math.round(report.currentRoundTripTime * 1000);
+              }
+            }
+
+            // Check inbound-rtp for audio jitter, packet loss, and bitrate
+            if (report.type === 'inbound-rtp' && (report.kind === 'audio' || report.mediaType === 'audio')) {
+              if (report.jitter !== undefined) {
+                jitterMs = Math.round(report.jitter * 1000);
+              }
+              if (report.packetsLost !== undefined) {
+                packetsLost = report.packetsLost;
+              }
+
+              if (report.bytesReceived !== undefined) {
+                const now = Date.now();
+                const prev = this.prevBytesReceived.get(peerId);
+                if (prev) {
+                  const bytesDiff = report.bytesReceived - prev.bytes;
+                  const timeDiffSec = (now - prev.timestamp) / 1000;
+                  if (timeDiffSec > 0 && bytesDiff >= 0) {
+                    audioBitrateKbps = Math.round((bytesDiff * 8) / timeDiffSec / 1000);
+                  }
+                }
+                this.prevBytesReceived.set(peerId, { bytes: report.bytesReceived, timestamp: now });
+              }
+
+              if (report.codecId) {
+                const codecReport = statsReport.get(report.codecId);
+                if (codecReport && codecReport.mimeType) {
+                  codec = codecReport.mimeType.replace('audio/', '');
+                }
+              }
+            }
+          });
+
+          this.callbacks.onPeerStats(peerId, {
+            peerId,
+            rttMs,
+            jitterMs,
+            packetsLost,
+            audioBitrateKbps,
+            codec
+          });
+        } catch {
+          // ignore transient stats error
+        }
+      }
+    }, 2000);
+  }
+
+  private stopStatsMonitoring(): void {
+    if (this.statsInterval !== null) {
+      clearInterval(this.statsInterval);
+      this.statsInterval = null;
+    }
+  }
+
+  /**
    * Retries connection with ICE restart if connection failed.
    */
   private async retryPeerConnection(peerId: string): Promise<void> {
@@ -337,6 +438,8 @@ export class WebRTCManager {
       this.audioElements.delete(peerId);
     }
 
+    this.spatialAudio.detachStream(peerId);
+    this.prevBytesReceived.delete(peerId);
     this.remoteStreams.delete(peerId);
     this.queuedCandidates.delete(peerId);
     this.callbacks.onConnectionStateChange(peerId, 'closed');
@@ -347,8 +450,11 @@ export class WebRTCManager {
    * Cleans up all peer connections, audio elements, and queues.
    */
   public destroy(): void {
+    this.stopStatsMonitoring();
+    this.spatialAudio.destroy();
     const peerIds = Array.from(this.peerConnections.keys());
     peerIds.forEach((id) => this.closePeer(id));
     this.localStream = null;
   }
 }
+

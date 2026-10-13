@@ -1,5 +1,5 @@
 import React from 'react';
-import { Users, PhoneCall, PhoneOff, Volume2, ShieldCheck, Activity } from 'lucide-react';
+import { Users, PhoneCall, PhoneOff, Volume2, ShieldCheck, Activity, Wifi, Radio } from 'lucide-react';
 import type { RemotePeerAudio, WebRTCConnectionState } from '../types';
 
 interface PeerListProps {
@@ -23,17 +23,27 @@ export const PeerList: React.FC<PeerListProps> = ({
   const getConnectionBadge = (state: WebRTCConnectionState) => {
     switch (state) {
       case 'connected':
-        return <span className="status-badge badge-active"><ShieldCheck className="w-3 h-3" /> Connected</span>;
+        return <span className="status-badge badge-active"><ShieldCheck className="w-3 h-3" /> Audio Connected</span>;
       case 'connecting':
         return <span className="status-badge badge-info animate-pulse"><Activity className="w-3 h-3" /> Handshaking...</span>;
       case 'failed':
-        return <span className="status-badge badge-error">Failed</span>;
+        return <span className="status-badge badge-error">Connection Failed</span>;
       case 'closed':
-        return <span className="status-badge badge-idle">Closed</span>;
+        return <span className="status-badge badge-idle">Call Ended</span>;
       case 'new':
       default:
         return <span className="status-badge badge-idle">Ready to Call</span>;
     }
+  };
+
+  const getQualityBadge = (rttMs: number, jitterMs: number) => {
+    if (rttMs < 60 && jitterMs < 20) {
+      return <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">Excellent</span>;
+    }
+    if (rttMs < 150) {
+      return <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/30">Good</span>;
+    }
+    return <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-400 border border-rose-500/30">Fair</span>;
   };
 
   return (
@@ -45,7 +55,7 @@ export const PeerList: React.FC<PeerListProps> = ({
           </div>
           <div>
             <h2 className="text-lg font-bold text-white tracking-tight">Active Room Peers</h2>
-            <p className="text-xs text-slate-400">Step 3 & 4: WebRTC RTCPeerConnection audio handshake</p>
+            <p className="text-xs text-slate-400">Task 2: Establish WebRTC audio connection between two browser sessions</p>
           </div>
         </div>
         <div className="text-xs font-mono bg-slate-900/80 px-2.5 py-1 rounded-md text-slate-400 border border-slate-800">
@@ -60,7 +70,7 @@ export const PeerList: React.FC<PeerListProps> = ({
           </div>
           <h4 className="text-sm font-semibold text-slate-300">No Other Peers Detected Yet</h4>
           <p className="text-xs text-slate-400 max-w-sm mx-auto mt-1">
-            Open another browser window or incognito tab at <code className="bg-slate-950 px-1 py-0.5 rounded text-indigo-400 font-mono">http://localhost:5173</code> to test the two-browser audio connection.
+            Open a second browser tab or incognito window at <code className="bg-slate-950 px-1 py-0.5 rounded text-indigo-400 font-mono">http://localhost:5173</code> to test the two-browser WebRTC connection.
           </p>
         </div>
       ) : (
@@ -68,6 +78,7 @@ export const PeerList: React.FC<PeerListProps> = ({
           {peerEntries.map(([peerId, peer]) => {
             const isConnected = peer.connectionState === 'connected';
             const isConnecting = peer.connectionState === 'connecting';
+            const stats = peer.stats;
 
             return (
               <div
@@ -106,14 +117,36 @@ export const PeerList: React.FC<PeerListProps> = ({
                         onClick={() => onStartCall(peerId)}
                         disabled={isConnecting}
                         className="btn btn-sm btn-primary"
-                        title={!isMicActive ? 'Tip: You can start call now or turn mic on anytime' : 'Start audio call'}
+                        title={!isMicActive ? 'Start audio call' : 'Start audio call'}
                       >
                         <PhoneCall className="w-3.5 h-3.5 mr-1.5" />
-                        {isConnecting ? 'Connecting...' : 'Call Peer'}
+                        {isConnecting ? 'Handshaking...' : 'Call Peer'}
                       </button>
                     )}
                   </div>
                 </div>
+
+                {/* Real-time WebRTC getStats Audio Quality Telemetry */}
+                {isConnected && stats && (
+                  <div className="mt-3 p-2.5 bg-slate-950/80 rounded-lg border border-slate-800/80 grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] font-mono">
+                    <div className="flex items-center gap-1.5 text-slate-400">
+                      <Wifi className="w-3 h-3 text-cyan-400" />
+                      <span>RTT: <strong className="text-slate-200">{stats.rttMs}ms</strong></span>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-slate-400">
+                      <Activity className="w-3 h-3 text-indigo-400" />
+                      <span>Jitter: <strong className="text-slate-200">{stats.jitterMs}ms</strong></span>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-slate-400">
+                      <Radio className="w-3 h-3 text-emerald-400" />
+                      <span>Bitrate: <strong className="text-slate-200">{stats.audioBitrateKbps}kbps</strong></span>
+                    </div>
+                    <div className="flex items-center justify-between text-slate-400">
+                      <span>Codec: <strong className="text-slate-200 uppercase">{stats.codec}</strong></span>
+                      {getQualityBadge(stats.rttMs, stats.jitterMs)}
+                    </div>
+                  </div>
+                )}
 
                 {/* Audio Playback & Week 2 Proximity Volume Slider */}
                 <div className="mt-3 pt-3 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-3 text-xs">
@@ -121,7 +154,7 @@ export const PeerList: React.FC<PeerListProps> = ({
                     <Volume2 className={`w-4 h-4 ${isConnected ? 'text-emerald-400 animate-pulse' : 'text-slate-600'}`} />
                     <span>
                       {isConnected
-                        ? 'Audio Connected (Native WebRTC)'
+                        ? 'Bidirectional Audio Active (Low-latency WebRTC)'
                         : 'Audio Stream Disconnected'}
                     </span>
                   </div>

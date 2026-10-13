@@ -11,7 +11,10 @@ export type {
   PositionUpdatePayload,
   WebRTCConnectionState,
   MicrophoneStatus,
-  RemotePeerAudio
+  RemotePeerAudio,
+  PeerAudioStats,
+  SignalingPingPayload,
+  SignalingPongPayload
 } from '../../shared/types';
 
 export interface SignalingLogEntry {
