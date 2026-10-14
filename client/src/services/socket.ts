@@ -49,6 +49,25 @@ export const socketService = {
   // 4. "signaling:ping" for latency monitoring
   ping(timestamp: number = Date.now()): void {
     socket.emit('signaling:ping', { timestamp });
+  },
+
+  // 5. "position:update" for real-time spatial movement synchronization
+  updatePosition(position: { x: number; y: number; z: number }): void {
+    socket.emit('position:update', { position });
+  },
+
+  // 6. "user:update-profile" for microphone mute & speaking status
+  updateProfile(payload: { isMuted?: boolean; isSpeaking?: boolean; username?: string }): void {
+    socket.emit('user:update-profile', payload);
+  },
+
+  // 7. Room switching and world state refresh
+  switchRoom(roomId: string, username?: string): void {
+    socket.emit('user:join', { roomId, username });
+  },
+
+  syncWorld(roomId?: string): void {
+    socket.emit('world:sync', { roomId });
   }
 };
 

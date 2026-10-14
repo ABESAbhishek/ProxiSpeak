@@ -8,17 +8,23 @@ import { ProximitySimulator } from './components/ProximitySimulator';
 import { Headphones, Radio, GitBranch, Sparkles, Activity } from 'lucide-react';
 
 export const App: React.FC = () => {
-  // Task 1: Microphone permissions, hardware devices & self-test
+  // Task 1: Microphone permissions, hardware devices, audio processing & self-test
   const {
     stream: localStream,
     status: micStatus,
     isMuted,
+    isSpeaking,
     audioLevel,
     frequencyBands,
     permissionState,
     availableDevices,
     selectedDeviceId,
     setSelectedDeviceId,
+    availableOutputDevices,
+    selectedOutputDeviceId,
+    setSelectedOutputDeviceId,
+    audioConstraints,
+    toggleAudioConstraint,
     isSelfTesting,
     selfTestSecondsRemaining,
     testAudioUrl,
@@ -35,14 +41,23 @@ export const App: React.FC = () => {
     localSocketId,
     isConnected,
     signalingLatencyMs,
+    currentRoomId,
     peers,
     signalingLogs,
     clearLogs,
     startCall,
     closeCall,
     setPeerVolume,
-    setPeerSpatial
-  } = useWebRTCAudio(localStream);
+    setPeerSpatial,
+    updateLocalPosition,
+    switchRoom,
+    setAudioOutputDevice
+  } = useWebRTCAudio(localStream, isSpeaking, isMuted);
+
+  const handleSelectOutputDevice = (sinkId: string) => {
+    setSelectedOutputDeviceId(sinkId);
+    setAudioOutputDevice(sinkId);
+  };
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
@@ -57,6 +72,9 @@ export const App: React.FC = () => {
               <div className="flex items-center gap-2">
                 <h1 className="text-base font-bold text-white tracking-tight">ProxiSpeak</h1>
                 <span className="badge-role">Week 1 WebRTC Foundation</span>
+                <span className="hidden sm:inline-block px-2 py-0.5 rounded text-[10px] font-mono bg-purple-500/10 text-purple-300 border border-purple-500/20">
+                  {currentRoomId}
+                </span>
               </div>
               <p className="text-[11px] text-slate-400">Member 4 — WebRTC & Proximity Audio</p>
             </div>
@@ -102,7 +120,7 @@ export const App: React.FC = () => {
                   1. Click <strong className="text-white">Start Microphone</strong> (or <strong className="text-white">Run Self-Test</strong> to verify audio) &bull; 
                   2. Open a second tab or incognito window &bull; 
                   3. In either tab, click <strong className="text-white">Call Peer</strong> to exchange <code className="text-indigo-300 font-mono">webrtc:offer</code>, <code className="text-indigo-300 font-mono">webrtc:answer</code>, & <code className="text-indigo-300 font-mono">webrtc:ice-candidate</code> &bull; 
-                  4. Drag your avatar on the soundstage to test proximity falloff and stereo panning!
+                  4. Drag your avatar on the soundstage to test proximity falloff, stereo panning, and real-time movement sync!
                 </p>
               </div>
             </div>
@@ -122,12 +140,18 @@ export const App: React.FC = () => {
             <AudioControls
               status={micStatus}
               isMuted={isMuted}
+              isSpeaking={isSpeaking}
               audioLevel={audioLevel}
               frequencyBands={frequencyBands}
               permissionState={permissionState}
               availableDevices={availableDevices}
               selectedDeviceId={selectedDeviceId}
               onSelectDevice={setSelectedDeviceId}
+              availableOutputDevices={availableOutputDevices}
+              selectedOutputDeviceId={selectedOutputDeviceId}
+              onSelectOutputDevice={handleSelectOutputDevice}
+              audioConstraints={audioConstraints}
+              onToggleAudioConstraint={toggleAudioConstraint}
               isSelfTesting={isSelfTesting}
               selfTestSecondsRemaining={selfTestSecondsRemaining}
               testAudioUrl={testAudioUrl}
@@ -141,7 +165,9 @@ export const App: React.FC = () => {
 
             <ProximitySimulator
               peers={peers}
+              localIsSpeaking={isSpeaking}
               onSetSpatial={setPeerSpatial}
+              onLocalMove={updateLocalPosition}
             />
           </div>
 
@@ -150,10 +176,12 @@ export const App: React.FC = () => {
             <PeerList
               peers={peers}
               localSocketId={localSocketId}
+              currentRoomId={currentRoomId}
               isMicActive={micStatus === 'active'}
               onStartCall={startCall}
               onCloseCall={closeCall}
               onSetVolume={setPeerVolume}
+              onSwitchRoom={switchRoom}
             />
 
             <SignalingLog

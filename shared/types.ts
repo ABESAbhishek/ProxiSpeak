@@ -77,6 +77,7 @@ export interface UserProfileUpdatePayload {
   userId: string;
   isMuted?: boolean;
   isSpeaking?: boolean;
+  username?: string;
 }
 
 export interface RoomInfo {
@@ -115,6 +116,8 @@ export interface RemotePeerAudio {
   /** Stereo pan between -1.0 (full left) and 1.0 (full right) */
   pan?: number;
   isMuted: boolean;
+  isSpeaking?: boolean;
+  position?: Position3D;
   stats?: PeerAudioStats;
 }
 

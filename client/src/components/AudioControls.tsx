@@ -5,12 +5,22 @@ import type { MicrophoneStatus } from '../types';
 interface AudioControlsProps {
   status: MicrophoneStatus;
   isMuted: boolean;
+  isSpeaking: boolean;
   audioLevel: number;
   frequencyBands: number[];
   permissionState: PermissionState | 'unknown';
   availableDevices: MediaDeviceInfo[];
   selectedDeviceId: string;
   onSelectDevice: (deviceId: string) => void;
+  availableOutputDevices: MediaDeviceInfo[];
+  selectedOutputDeviceId: string;
+  onSelectOutputDevice: (deviceId: string) => void;
+  audioConstraints: {
+    echoCancellation: boolean;
+    noiseSuppression: boolean;
+    autoGainControl: boolean;
+  };
+  onToggleAudioConstraint: (key: 'echoCancellation' | 'noiseSuppression' | 'autoGainControl') => void;
   isSelfTesting: boolean;
   selfTestSecondsRemaining: number;
   testAudioUrl: string | null;
@@ -25,12 +35,18 @@ interface AudioControlsProps {
 export const AudioControls: React.FC<AudioControlsProps> = ({
   status,
   isMuted,
+  isSpeaking,
   audioLevel,
   frequencyBands,
   permissionState,
   availableDevices,
   selectedDeviceId,
   onSelectDevice,
+  availableOutputDevices,
+  selectedOutputDeviceId,
+  onSelectOutputDevice,
+  audioConstraints,
+  onToggleAudioConstraint,
   isSelfTesting,
   selfTestSecondsRemaining,
   testAudioUrl,
@@ -44,7 +60,16 @@ export const AudioControls: React.FC<AudioControlsProps> = ({
   const getStatusBadge = () => {
     switch (status) {
       case 'active':
-        return <span className="status-badge badge-active"><Radio className="w-3 h-3 animate-pulse" /> Mic Active</span>;
+        return (
+          <div className="flex items-center gap-1.5">
+            {isSpeaking && (
+              <span className="px-2 py-0.5 rounded text-[11px] font-mono bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 animate-pulse flex items-center gap-1">
+                <Volume2 className="w-3 h-3 text-cyan-400" /> Speaking
+              </span>
+            )}
+            <span className="status-badge badge-active"><Radio className="w-3 h-3 animate-pulse" /> Mic Active</span>
+          </div>
+        );
       case 'muted':
         return <span className="status-badge badge-warning"><MicOff className="w-3 h-3" /> Muted</span>;
       case 'requesting':
@@ -101,32 +126,104 @@ export const AudioControls: React.FC<AudioControlsProps> = ({
         </div>
       )}
 
-      {/* Input Device Selection */}
-      <div className="mt-4 p-3 bg-slate-900/60 rounded-xl border border-slate-800/80 space-y-2">
-        <div className="flex items-center justify-between text-xs text-slate-400">
-          <span className="font-medium text-slate-300">Selected Audio Input Device:</span>
-          <span className="text-[11px] text-slate-500">{availableDevices.length} device(s) found</span>
+      {/* Hardware Device Selection (Input & Output) */}
+      <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {/* Audio Input (Microphone) */}
+        <div className="p-3 bg-slate-900/60 rounded-xl border border-slate-800/80 space-y-1.5">
+          <div className="flex items-center justify-between text-xs text-slate-400">
+            <span className="font-medium text-slate-300">Audio Input (Mic):</span>
+            <span className="text-[10px] text-slate-500 font-mono">{availableDevices.length} found</span>
+          </div>
+          <select
+            value={selectedDeviceId}
+            onChange={(e) => {
+              onSelectDevice(e.target.value);
+              if (isMicRunning) {
+                onStart(e.target.value);
+              }
+            }}
+            className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 transition-colors"
+          >
+            {availableDevices.length > 0 ? (
+              availableDevices.map((dev, idx) => (
+                <option key={dev.deviceId || idx} value={dev.deviceId}>
+                  {dev.label || `Microphone ${idx + 1} (${dev.deviceId.substring(0, 8)}...)`}
+                </option>
+              ))
+            ) : (
+              <option value="">Default System Microphone</option>
+            )}
+          </select>
         </div>
-        <select
-          value={selectedDeviceId}
-          onChange={(e) => {
-            onSelectDevice(e.target.value);
-            if (isMicRunning) {
-              onStart(e.target.value);
-            }
-          }}
-          className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 transition-colors"
-        >
-          {availableDevices.length > 0 ? (
-            availableDevices.map((dev, idx) => (
-              <option key={dev.deviceId || idx} value={dev.deviceId}>
-                {dev.label || `Microphone ${idx + 1} (${dev.deviceId.substring(0, 8)}...)`}
-              </option>
-            ))
-          ) : (
-            <option value="">Default System Microphone</option>
-          )}
-        </select>
+
+        {/* Audio Output (Speakers / Headphones) */}
+        <div className="p-3 bg-slate-900/60 rounded-xl border border-slate-800/80 space-y-1.5">
+          <div className="flex items-center justify-between text-xs text-slate-400">
+            <span className="font-medium text-slate-300">Audio Output (Speakers):</span>
+            <span className="text-[10px] text-slate-500 font-mono">
+              {availableOutputDevices.length > 0 ? `${availableOutputDevices.length} found` : 'System Default'}
+            </span>
+          </div>
+          <select
+            value={selectedOutputDeviceId}
+            onChange={(e) => onSelectOutputDevice(e.target.value)}
+            disabled={availableOutputDevices.length === 0}
+            className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 transition-colors disabled:opacity-50"
+          >
+            {availableOutputDevices.length > 0 ? (
+              availableOutputDevices.map((dev, idx) => (
+                <option key={dev.deviceId || idx} value={dev.deviceId}>
+                  {dev.label || `Speaker ${idx + 1} (${dev.deviceId.substring(0, 8)}...)`}
+                </option>
+              ))
+            ) : (
+              <option value="">System Default Speaker</option>
+            )}
+          </select>
+        </div>
+      </div>
+
+      {/* DSP / Hardware Audio Processing Controls */}
+      <div className="mt-3 p-2.5 bg-slate-900/40 rounded-xl border border-slate-800/60 flex flex-wrap items-center justify-between gap-2 text-xs">
+        <span className="text-[11px] text-slate-400 font-mono">Audio Processing Constraints:</span>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => onToggleAudioConstraint('echoCancellation')}
+            className={`px-2 py-0.5 rounded text-[10px] font-mono border transition-all ${
+              audioConstraints.echoCancellation
+                ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40 shadow-sm'
+                : 'bg-slate-800 text-slate-500 border-slate-700'
+            }`}
+            title="Toggle WebRTC Echo Cancellation"
+          >
+            Echo Cancellation {audioConstraints.echoCancellation ? 'ON' : 'OFF'}
+          </button>
+          <button
+            type="button"
+            onClick={() => onToggleAudioConstraint('noiseSuppression')}
+            className={`px-2 py-0.5 rounded text-[10px] font-mono border transition-all ${
+              audioConstraints.noiseSuppression
+                ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40 shadow-sm'
+                : 'bg-slate-800 text-slate-500 border-slate-700'
+            }`}
+            title="Toggle WebRTC Noise Suppression"
+          >
+            Noise Suppression {audioConstraints.noiseSuppression ? 'ON' : 'OFF'}
+          </button>
+          <button
+            type="button"
+            onClick={() => onToggleAudioConstraint('autoGainControl')}
+            className={`px-2 py-0.5 rounded text-[10px] font-mono border transition-all ${
+              audioConstraints.autoGainControl
+                ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40 shadow-sm'
+                : 'bg-slate-800 text-slate-500 border-slate-700'
+            }`}
+            title="Toggle WebRTC Auto Gain Control (AGC)"
+          >
+            Auto Gain {audioConstraints.autoGainControl ? 'ON' : 'OFF'}
+          </button>
+        </div>
       </div>
 
       {/* Audio Level & 8-band Frequency Visualizer */}

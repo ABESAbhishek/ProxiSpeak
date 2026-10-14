@@ -9,6 +9,7 @@ export type {
   UserLeftPayload,
   WorldStatePayload,
   PositionUpdatePayload,
+  UserProfileUpdatePayload,
   WebRTCConnectionState,
   MicrophoneStatus,
   RemotePeerAudio,
@@ -21,7 +22,16 @@ export interface SignalingLogEntry {
   id: string;
   timestamp: string;
   direction: 'in' | 'out';
-  type: 'webrtc:offer' | 'webrtc:answer' | 'webrtc:ice-candidate' | 'user:join' | 'user:left' | 'world:state';
+  type:
+    | 'webrtc:offer'
+    | 'webrtc:answer'
+    | 'webrtc:ice-candidate'
+    | 'webrtc:error'
+    | 'user:join'
+    | 'user:left'
+    | 'world:state'
+    | 'position:update'
+    | 'user:update-profile';
   summary: string;
   details?: unknown;
 }

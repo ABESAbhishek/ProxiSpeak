@@ -1,10 +1,17 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import type { MicrophoneStatus } from '../types';
 
+export interface AudioProcessingConstraints {
+  echoCancellation: boolean;
+  noiseSuppression: boolean;
+  autoGainControl: boolean;
+}
+
 export interface UseMicrophoneResult {
   stream: MediaStream | null;
   status: MicrophoneStatus;
   isMuted: boolean;
+  isSpeaking: boolean;
   errorMessage: string | null;
   audioLevel: number;
   frequencyBands: number[];
@@ -12,6 +19,11 @@ export interface UseMicrophoneResult {
   availableDevices: MediaDeviceInfo[];
   selectedDeviceId: string;
   setSelectedDeviceId: (id: string) => void;
+  availableOutputDevices: MediaDeviceInfo[];
+  selectedOutputDeviceId: string;
+  setSelectedOutputDeviceId: (id: string) => void;
+  audioConstraints: AudioProcessingConstraints;
+  toggleAudioConstraint: (key: keyof AudioProcessingConstraints) => void;
   isSelfTesting: boolean;
   selfTestSecondsRemaining: number;
   testAudioUrl: string | null;
@@ -26,12 +38,20 @@ export function useMicrophone(): UseMicrophoneResult {
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [status, setStatus] = useState<MicrophoneStatus>('idle');
   const [isMuted, setIsMuted] = useState<boolean>(false);
+  const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [audioLevel, setAudioLevel] = useState<number>(0);
   const [frequencyBands, setFrequencyBands] = useState<number[]>([0, 0, 0, 0, 0, 0, 0, 0]);
   const [permissionState, setPermissionState] = useState<PermissionState | 'unknown'>('unknown');
   const [availableDevices, setAvailableDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
+  const [availableOutputDevices, setAvailableOutputDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedOutputDeviceId, setSelectedOutputDeviceId] = useState<string>('');
+  const [audioConstraints, setAudioConstraints] = useState<AudioProcessingConstraints>({
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true
+  });
   
   // Microphone Self-Test / Loopback test state
   const [isSelfTesting, setIsSelfTesting] = useState<boolean>(false);
@@ -43,6 +63,7 @@ export function useMicrophone(): UseMicrophoneResult {
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const speakingTimeoutRef = useRef<number | null>(null);
 
   // 1. Query browser permission status via Permissions API
   const checkPermissionState = useCallback(async () => {
@@ -59,20 +80,25 @@ export function useMicrophone(): UseMicrophoneResult {
     }
   }, []);
 
-  // 2. Enumerate available audio input devices
+  // 2. Enumerate available audio input and output devices
   const refreshDevices = useCallback(async () => {
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
       const allDevices = await navigator.mediaDevices.enumerateDevices();
       const audioInputs = allDevices.filter((d) => d.kind === 'audioinput');
+      const audioOutputs = allDevices.filter((d) => d.kind === 'audiooutput');
       setAvailableDevices(audioInputs);
+      setAvailableOutputDevices(audioOutputs);
       if (audioInputs.length > 0 && !selectedDeviceId) {
         setSelectedDeviceId(audioInputs[0].deviceId);
+      }
+      if (audioOutputs.length > 0 && !selectedOutputDeviceId) {
+        setSelectedOutputDeviceId(audioOutputs[0].deviceId);
       }
     } catch (err) {
       console.warn('[Microphone] Could not enumerate audio devices:', err);
     }
-  }, [selectedDeviceId]);
+  }, [selectedDeviceId, selectedOutputDeviceId]);
 
   useEffect(() => {
     checkPermissionState();
@@ -86,7 +112,7 @@ export function useMicrophone(): UseMicrophoneResult {
     }
   }, [checkPermissionState, refreshDevices]);
 
-  // Audio level and 8-band frequency monitoring using Web Audio API
+  // Audio level and 8-band frequency monitoring using Web Audio API with Voice Activity Detection (VAD)
   const startLevelMeter = useCallback((mediaStream: MediaStream) => {
     try {
       const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
@@ -115,6 +141,22 @@ export function useMicrophone(): UseMicrophoneResult {
         const normalized = Math.min(100, Math.round((average / 128) * 100));
         setAudioLevel(normalized);
 
+        // Voice Activity Detection (VAD): Speaking threshold with debounced reset
+        if (normalized > 12 && !isMuted) {
+          if (speakingTimeoutRef.current) {
+            clearTimeout(speakingTimeoutRef.current);
+            speakingTimeoutRef.current = null;
+          }
+          setIsSpeaking(true);
+        } else {
+          if (!speakingTimeoutRef.current) {
+            speakingTimeoutRef.current = window.setTimeout(() => {
+              setIsSpeaking(false);
+              speakingTimeoutRef.current = null;
+            }, 350);
+          }
+        }
+
         // Group into 8 frequency visualizer bands
         const bandSize = Math.max(1, Math.floor(dataArray.length / 8));
         const bands: number[] = [];
@@ -134,12 +176,16 @@ export function useMicrophone(): UseMicrophoneResult {
     } catch (err) {
       console.warn('[Microphone] Audio meter could not be initialized:', err);
     }
-  }, []);
+  }, [isMuted]);
 
   const stopLevelMeter = useCallback(() => {
     if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current);
       animationFrameRef.current = null;
+    }
+    if (speakingTimeoutRef.current) {
+      clearTimeout(speakingTimeoutRef.current);
+      speakingTimeoutRef.current = null;
     }
     if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
       audioContextRef.current.close().catch(() => {});
@@ -147,6 +193,7 @@ export function useMicrophone(): UseMicrophoneResult {
     }
     analyserRef.current = null;
     setAudioLevel(0);
+    setIsSpeaking(false);
     setFrequencyBands([0, 0, 0, 0, 0, 0, 0, 0]);
   }, []);
 
@@ -164,6 +211,28 @@ export function useMicrophone(): UseMicrophoneResult {
     }
     setStream(null);
   }, [stopLevelMeter]);
+
+  /**
+   * Dynamically toggles audio processing constraints (echo cancellation, noise suppression, AGC).
+   */
+  const toggleAudioConstraint = useCallback((key: keyof AudioProcessingConstraints) => {
+    setAudioConstraints((prev) => {
+      const updated = { ...prev, [key]: !prev[key] };
+      if (streamRef.current && streamRef.current.active) {
+        const audioTrack = streamRef.current.getAudioTracks()[0];
+        if (audioTrack && audioTrack.applyConstraints) {
+          audioTrack
+            .applyConstraints({
+              [key]: updated[key]
+            })
+            .catch((err) => {
+              console.warn(`[Microphone] Failed to dynamically apply ${key} constraint:`, err);
+            });
+        }
+      }
+      return updated;
+    });
+  }, []);
 
   /**
    * Requests microphone access.
@@ -191,18 +260,18 @@ export function useMicrophone(): UseMicrophoneResult {
 
     try {
       const targetDevice = deviceIdToUse || selectedDeviceId;
-      const audioConstraints: MediaTrackConstraints = {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true
+      const audioConstraintsConfig: MediaTrackConstraints = {
+        echoCancellation: audioConstraints.echoCancellation,
+        noiseSuppression: audioConstraints.noiseSuppression,
+        autoGainControl: audioConstraints.autoGainControl
       };
 
       if (targetDevice) {
-        audioConstraints.deviceId = { exact: targetDevice };
+        audioConstraintsConfig.deviceId = { exact: targetDevice };
       }
 
       const mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: audioConstraints,
+        audio: audioConstraintsConfig,
         video: false
       });
 
@@ -362,6 +431,7 @@ export function useMicrophone(): UseMicrophoneResult {
     stream,
     status,
     isMuted,
+    isSpeaking,
     errorMessage,
     audioLevel,
     frequencyBands,
@@ -369,6 +439,11 @@ export function useMicrophone(): UseMicrophoneResult {
     availableDevices,
     selectedDeviceId,
     setSelectedDeviceId,
+    availableOutputDevices,
+    selectedOutputDeviceId,
+    setSelectedOutputDeviceId,
+    audioConstraints,
+    toggleAudioConstraint,
     isSelfTesting,
     selfTestSecondsRemaining,
     testAudioUrl,

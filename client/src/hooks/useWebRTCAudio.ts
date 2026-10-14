@@ -11,13 +11,15 @@ import type {
   SignalingLogEntry,
   WorldStatePayload,
   UserProfile,
-  UserLeftPayload
+  UserLeftPayload,
+  Position3D
 } from '../types';
 
 export interface UseWebRTCAudioResult {
   localSocketId: string | null;
   isConnected: boolean;
   signalingLatencyMs: number | null;
+  currentRoomId: string;
   peers: Record<string, RemotePeerAudio>;
   signalingLogs: SignalingLogEntry[];
   clearLogs: () => void;
@@ -25,11 +27,19 @@ export interface UseWebRTCAudioResult {
   closeCall: (peerId: string) => void;
   setPeerVolume: (peerId: string, volume: number) => void;
   setPeerSpatial: (peerId: string, volume: number, pan?: number) => void;
+  updateLocalPosition: (position: Position3D) => void;
+  switchRoom: (roomId: string) => void;
+  setAudioOutputDevice: (sinkId: string) => Promise<void>;
 }
 
-export function useWebRTCAudio(localStream: MediaStream | null): UseWebRTCAudioResult {
+export function useWebRTCAudio(
+  localStream: MediaStream | null,
+  isSpeaking: boolean = false,
+  isMuted: boolean = false
+): UseWebRTCAudioResult {
   const [localSocketId, setLocalSocketId] = useState<string | null>(socket.id || null);
   const [isConnected, setIsConnected] = useState<boolean>(socket.connected);
+  const [currentRoomId, setCurrentRoomId] = useState<string>('global-space');
   const [signalingLatencyMs, setSignalingLatencyMs] = useState<number | null>(null);
   const [peers, setPeers] = useState<Record<string, RemotePeerAudio>>({});
   const [signalingLogs, setSignalingLogs] = useState<SignalingLogEntry[]>([]);
@@ -168,7 +178,16 @@ export function useWebRTCAudio(localStream: MediaStream | null): UseWebRTCAudioR
                 stream: new MediaStream(),
                 connectionState: 'new',
                 volume: 1.0,
-                isMuted: user.isMuted || false
+                isMuted: user.isMuted || false,
+                isSpeaking: user.isSpeaking || false,
+                position: user.position
+              };
+            } else {
+              next[user.id] = {
+                ...next[user.id],
+                position: user.position || next[user.id].position,
+                isMuted: user.isMuted ?? next[user.id].isMuted,
+                isSpeaking: user.isSpeaking ?? next[user.id].isSpeaking
               };
             }
           }
@@ -191,7 +210,9 @@ export function useWebRTCAudio(localStream: MediaStream | null): UseWebRTCAudioR
             stream: new MediaStream(),
             connectionState: 'new',
             volume: 1.0,
-            isMuted: user.isMuted || false
+            isMuted: user.isMuted || false,
+            isSpeaking: user.isSpeaking || false,
+            position: user.position
           }
         };
       });
@@ -237,6 +258,43 @@ export function useWebRTCAudio(localStream: MediaStream | null): UseWebRTCAudioR
       setSignalingLatencyMs(latency);
     };
 
+    // 5. "position:update" spatial movement from peers
+    const handlePositionUpdate = (payload: { userId: string; position: { x: number; y: number; z: number }; roomId?: string }) => {
+      setPeers((prev) => {
+        const existing = prev[payload.userId];
+        if (!existing) return prev;
+        return {
+          ...prev,
+          [payload.userId]: {
+            ...existing,
+            position: payload.position
+          }
+        };
+      });
+    };
+
+    // 6. "user:update-profile" mic mute/speaking status from peers
+    const handleProfileUpdate = (payload: { userId: string; isMuted?: boolean; isSpeaking?: boolean; username?: string }) => {
+      setPeers((prev) => {
+        const existing = prev[payload.userId];
+        if (!existing) return prev;
+        return {
+          ...prev,
+          [payload.userId]: {
+            ...existing,
+            isMuted: typeof payload.isMuted === 'boolean' ? payload.isMuted : existing.isMuted,
+            isSpeaking: typeof payload.isSpeaking === 'boolean' ? payload.isSpeaking : existing.isSpeaking,
+            username: payload.username || existing.username
+          }
+        };
+      });
+    };
+
+    // 7. "webrtc:error"
+    const handleWebRTCError = (payload: { message: string; targetId?: string }) => {
+      addLog('in', 'webrtc:error', payload.message, payload);
+    };
+
     // Bind listeners
     socket.on('connect', handleConnect);
     socket.on('disconnect', handleDisconnect);
@@ -248,6 +306,9 @@ export function useWebRTCAudio(localStream: MediaStream | null): UseWebRTCAudioR
     socket.on('webrtc:answer', handleAnswer);
     socket.on('webrtc:ice-candidate', handleIceCandidate);
     socket.on('signaling:pong', handlePong);
+    socket.on('position:update', handlePositionUpdate);
+    socket.on('user:update-profile', handleProfileUpdate);
+    socket.on('webrtc:error', handleWebRTCError);
 
     if (socket.connected) {
       handleConnect();
@@ -264,8 +325,18 @@ export function useWebRTCAudio(localStream: MediaStream | null): UseWebRTCAudioR
       socket.off('webrtc:answer', handleAnswer);
       socket.off('webrtc:ice-candidate', handleIceCandidate);
       socket.off('signaling:pong', handlePong);
+      socket.off('position:update', handlePositionUpdate);
+      socket.off('user:update-profile', handleProfileUpdate);
+      socket.off('webrtc:error', handleWebRTCError);
     };
   }, [addLog]);
+
+  // Sync local speaking and mute state to signaling server
+  useEffect(() => {
+    if (isConnected) {
+      socketService.updateProfile({ isMuted, isSpeaking });
+    }
+  }, [isConnected, isMuted, isSpeaking]);
 
   // Periodic signaling latency ping
   useEffect(() => {
@@ -324,17 +395,39 @@ export function useWebRTCAudio(localStream: MediaStream | null): UseWebRTCAudioR
     });
   }, []);
 
+  const updateLocalPosition = useCallback((position: { x: number; y: number; z: number }) => {
+    if (isConnected) {
+      socketService.updatePosition(position);
+    }
+  }, [isConnected]);
+
+  const switchRoom = useCallback((roomId: string) => {
+    setCurrentRoomId(roomId);
+    socketService.switchRoom(roomId);
+    addLog('out', 'user:join', `Switched to room: '${roomId}'`);
+  }, [addLog]);
+
+  const setAudioOutputDevice = useCallback(async (sinkId: string) => {
+    if (webrtcManagerRef.current) {
+      await webrtcManagerRef.current.setAudioOutputDevice(sinkId);
+    }
+  }, []);
+
   return {
     localSocketId,
     isConnected,
     signalingLatencyMs,
+    currentRoomId,
     peers,
     signalingLogs,
     clearLogs,
     startCall,
     closeCall,
     setPeerVolume,
-    setPeerSpatial
+    setPeerSpatial,
+    updateLocalPosition,
+    switchRoom,
+    setAudioOutputDevice
   };
 }
 

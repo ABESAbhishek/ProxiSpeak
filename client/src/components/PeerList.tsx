@@ -5,18 +5,22 @@ import type { RemotePeerAudio, WebRTCConnectionState } from '../types';
 interface PeerListProps {
   peers: Record<string, RemotePeerAudio>;
   localSocketId: string | null;
+  currentRoomId: string;
   isMicActive: boolean;
   onStartCall: (peerId: string) => void;
   onCloseCall: (peerId: string) => void;
   onSetVolume: (peerId: string, volume: number) => void;
+  onSwitchRoom: (roomId: string) => void;
 }
 
 export const PeerList: React.FC<PeerListProps> = ({
   peers,
+  currentRoomId,
   isMicActive,
   onStartCall,
   onCloseCall,
-  onSetVolume
+  onSetVolume,
+  onSwitchRoom
 }) => {
   const peerEntries = Object.entries(peers);
 
@@ -58,8 +62,21 @@ export const PeerList: React.FC<PeerListProps> = ({
             <p className="text-xs text-slate-400">Task 2: Establish WebRTC audio connection between two browser sessions</p>
           </div>
         </div>
-        <div className="text-xs font-mono bg-slate-900/80 px-2.5 py-1 rounded-md text-slate-400 border border-slate-800">
-          Peers in space: {peerEntries.length}
+
+        {/* Room Switcher */}
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] text-slate-400 font-mono hidden sm:inline">Room:</span>
+          <select
+            value={currentRoomId}
+            onChange={(e) => onSwitchRoom(e.target.value)}
+            className="bg-slate-900 border border-slate-700 text-indigo-300 text-xs rounded-lg px-2.5 py-1 font-mono focus:outline-none focus:border-indigo-500 font-semibold"
+            title="Switch audio space / room"
+          >
+            <option value="global-space">global-space</option>
+            <option value="audio-lab">audio-lab</option>
+            <option value="spatial-room-1">spatial-room-1</option>
+            <option value="quad-zone">quad-zone</option>
+          </select>
         </div>
       </div>
 
@@ -68,7 +85,7 @@ export const PeerList: React.FC<PeerListProps> = ({
           <div className="w-12 h-12 rounded-2xl bg-slate-800/80 flex items-center justify-center mx-auto mb-3 text-slate-500">
             <Users className="w-6 h-6" />
           </div>
-          <h4 className="text-sm font-semibold text-slate-300">No Other Peers Detected Yet</h4>
+          <h4 className="text-sm font-semibold text-slate-300">No Other Peers in '{currentRoomId}' Yet</h4>
           <p className="text-xs text-slate-400 max-w-sm mx-auto mt-1">
             Open a second browser tab or incognito window at <code className="bg-slate-950 px-1 py-0.5 rounded text-indigo-400 font-mono">http://localhost:5173</code> to test the two-browser WebRTC connection.
           </p>
@@ -79,6 +96,8 @@ export const PeerList: React.FC<PeerListProps> = ({
             const isConnected = peer.connectionState === 'connected';
             const isConnecting = peer.connectionState === 'connecting';
             const stats = peer.stats;
+            const isSpeaking = peer.isSpeaking;
+            const isMuted = peer.isMuted;
 
             return (
               <div
@@ -91,12 +110,25 @@ export const PeerList: React.FC<PeerListProps> = ({
               >
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-xs font-bold text-white font-mono shadow-md">
+                    <div className={`relative w-9 h-9 rounded-xl flex items-center justify-center text-xs font-bold text-white font-mono shadow-md ${
+                      isSpeaking
+                        ? 'bg-gradient-to-br from-emerald-400 to-cyan-500 ring-2 ring-cyan-400 ring-offset-2 ring-offset-slate-950 animate-pulse'
+                        : 'bg-gradient-to-br from-indigo-500 to-purple-600'
+                    }`}>
                       {peer.username.substring(0, 2).toUpperCase()}
+                      {isSpeaking && (
+                        <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-emerald-400 border border-slate-950 animate-ping" />
+                      )}
                     </div>
                     <div>
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-semibold text-white">{peer.username}</span>
+                        {isMuted && (
+                          <span className="px-1.5 py-0.2 rounded text-[10px] bg-rose-500/10 text-rose-400 border border-rose-500/20 font-mono">Muted</span>
+                        )}
+                        {isSpeaking && (
+                          <span className="px-1.5 py-0.2 rounded text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono animate-pulse">Speaking</span>
+                        )}
                         <span className="text-[11px] font-mono text-slate-400">ID: {peerId.substring(0, 8)}...</span>
                       </div>
                       <div className="mt-0.5">{getConnectionBadge(peer.connectionState)}</div>

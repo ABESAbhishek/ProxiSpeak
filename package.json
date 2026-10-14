@@ -10,7 +10,10 @@
     "build:server": "npm run build --prefix server",
     "build:client": "npm run build --prefix client",
     "build": "npm run build:server && npm run build:client",
-    "type-check": "npm run build:server && npm run lint --prefix client"
+    "type-check": "npm run build:server && npm run lint --prefix client",
+    "test:spatial": "node server/test-spatial.mjs",
+    "test:signaling": "node server/test-signaling.mjs",
+    "test": "npm run test:spatial"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"

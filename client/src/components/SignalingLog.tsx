@@ -14,12 +14,15 @@ export const SignalingLog: React.FC<SignalingLogProps> = ({ logs, signalingLaten
   const offerCount = logs.filter((l) => l.type === 'webrtc:offer').length;
   const answerCount = logs.filter((l) => l.type === 'webrtc:answer').length;
   const iceCount = logs.filter((l) => l.type === 'webrtc:ice-candidate').length;
+  const spatialCount = logs.filter((l) => l.type === 'position:update').length;
 
   const filteredLogs = logs.filter((log) => {
     if (filter === 'all') return true;
     if (filter === 'offer') return log.type === 'webrtc:offer';
     if (filter === 'answer') return log.type === 'webrtc:answer';
     if (filter === 'ice') return log.type === 'webrtc:ice-candidate';
+    if (filter === 'spatial') return log.type === 'position:update';
+    if (filter === 'error') return log.type === 'webrtc:error';
     return true;
   });
 
@@ -56,6 +59,8 @@ export const SignalingLog: React.FC<SignalingLogProps> = ({ logs, signalingLaten
             <option value="offer">Offers ({offerCount})</option>
             <option value="answer">Answers ({answerCount})</option>
             <option value="ice">ICE ({iceCount})</option>
+            <option value="spatial">Spatial Moves ({spatialCount})</option>
+            <option value="error">Errors</option>
           </select>
 
           <button
@@ -69,7 +74,7 @@ export const SignalingLog: React.FC<SignalingLogProps> = ({ logs, signalingLaten
       </div>
 
       {/* Signaling telemetry counter chips */}
-      <div className="mt-3 grid grid-cols-3 gap-2 text-xs font-mono">
+      <div className="mt-3 grid grid-cols-3 sm:grid-cols-4 gap-2 text-xs font-mono">
         <div className="p-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-center">
           <div className="text-[10px] text-amber-300/80 uppercase font-semibold">Offers Relayed</div>
           <div className="text-base font-bold text-amber-200 mt-0.5">{offerCount}</div>
@@ -81,6 +86,10 @@ export const SignalingLog: React.FC<SignalingLogProps> = ({ logs, signalingLaten
         <div className="p-2 rounded-lg bg-cyan-500/10 border border-cyan-500/20 text-center">
           <div className="text-[10px] text-cyan-300/80 uppercase font-semibold">ICE Candidates</div>
           <div className="text-base font-bold text-cyan-200 mt-0.5">{iceCount}</div>
+        </div>
+        <div className="p-2 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-center hidden sm:block">
+          <div className="text-[10px] text-indigo-300/80 uppercase font-semibold">Spatial Sync</div>
+          <div className="text-base font-bold text-indigo-200 mt-0.5">{spatialCount}</div>
         </div>
       </div>
 
@@ -95,11 +104,16 @@ export const SignalingLog: React.FC<SignalingLogProps> = ({ logs, signalingLaten
             const isOffer = log.type === 'webrtc:offer';
             const isAnswer = log.type === 'webrtc:answer';
             const isIce = log.type === 'webrtc:ice-candidate';
+            const isError = log.type === 'webrtc:error';
+            const isSpatial = log.type === 'position:update';
+            const isProfile = log.type === 'user:update-profile';
 
             return (
               <div
                 key={log.id}
-                className="flex items-start justify-between gap-2 p-2 rounded-lg bg-slate-900/60 border border-slate-800 hover:border-slate-700 transition-colors"
+                className={`flex items-start justify-between gap-2 p-2 rounded-lg border hover:border-slate-700 transition-colors ${
+                  isError ? 'bg-rose-950/20 border-rose-900/50' : 'bg-slate-900/60 border-slate-800'
+                }`}
               >
                 <div className="flex items-center gap-2">
                   {isOut ? (
@@ -120,13 +134,19 @@ export const SignalingLog: React.FC<SignalingLogProps> = ({ logs, signalingLaten
                         ? 'bg-emerald-500/20 text-emerald-300'
                         : isIce
                         ? 'bg-cyan-500/20 text-cyan-300'
+                        : isError
+                        ? 'bg-rose-500/20 text-rose-300'
+                        : isSpatial
+                        ? 'bg-indigo-500/20 text-indigo-300'
+                        : isProfile
+                        ? 'bg-purple-500/20 text-purple-300'
                         : 'bg-slate-700 text-slate-300'
                     }`}
                   >
                     {log.type}
                   </span>
 
-                  <span className="text-slate-300 text-[11px]">{log.summary}</span>
+                  <span className={`text-[11px] ${isError ? 'text-rose-300 font-semibold' : 'text-slate-300'}`}>{log.summary}</span>
                 </div>
 
                 <div className="flex items-center gap-1.5 text-[10px] text-slate-400 flex-shrink-0">

@@ -13,7 +13,7 @@ export interface WebRTCManagerCallbacks {
   onSendIceCandidate: (payload: WebRTCIceCandidatePayload) => void;
   onRemoteStream: (peerId: string, stream: MediaStream) => void;
   onConnectionStateChange: (peerId: string, state: WebRTCConnectionState) => void;
-  onLog?: (direction: 'in' | 'out', type: 'webrtc:offer' | 'webrtc:answer' | 'webrtc:ice-candidate', summary: string, details?: unknown) => void;
+  onLog?: (direction: 'in' | 'out', type: 'webrtc:offer' | 'webrtc:answer' | 'webrtc:ice-candidate' | 'webrtc:error', summary: string, details?: unknown) => void;
   onPeerStats?: (peerId: string, stats: PeerAudioStats) => void;
 }
 
@@ -39,6 +39,7 @@ export class WebRTCManager {
   private spatialAudio: SpatialAudioGraph = new SpatialAudioGraph();
   private statsInterval: number | null = null;
   private prevBytesReceived: Map<string, { bytes: number; timestamp: number }> = new Map();
+  private selectedSinkId: string = '';
 
   constructor(callbacks: WebRTCManagerCallbacks) {
     this.callbacks = callbacks;
@@ -282,8 +283,11 @@ export class WebRTCManager {
     if (!audio) {
       audio = new Audio();
       audio.autoplay = true;
-      // In modern browsers, audio elements attached to MediaStreams don't need to be in DOM,
-      // but must play explicitly to adhere to autoplay policies.
+      if (this.selectedSinkId && 'setSinkId' in audio && typeof (audio as unknown as { setSinkId: (id: string) => Promise<void> }).setSinkId === 'function') {
+        (audio as unknown as { setSinkId: (id: string) => Promise<void> }).setSinkId(this.selectedSinkId).catch((err) => {
+          console.warn('[WebRTC] Error setting sinkId on new audio element:', err);
+        });
+      }
       this.audioElements.set(peerId, audio);
     }
 
@@ -291,6 +295,23 @@ export class WebRTCManager {
     audio.play().catch((err) => {
       console.warn(`[WebRTC] Autoplay prevented for peer ${peerId}. User interaction may be required:`, err);
     });
+  }
+
+  /**
+   * Routes remote peer audio output to a specific audio output device (e.g. headphones).
+   */
+  public async setAudioOutputDevice(sinkId: string): Promise<void> {
+    this.selectedSinkId = sinkId;
+    for (const [peerId, audio] of this.audioElements.entries()) {
+      if ('setSinkId' in audio && typeof (audio as unknown as { setSinkId: (id: string) => Promise<void> }).setSinkId === 'function') {
+        try {
+          await (audio as unknown as { setSinkId: (id: string) => Promise<void> }).setSinkId(sinkId);
+          console.log(`[WebRTC] Audio output for peer ${peerId} switched to sink: ${sinkId}`);
+        } catch (err) {
+          console.warn(`[WebRTC] Error setting audio sink for peer ${peerId}:`, err);
+        }
+      }
+    }
   }
 
   /**

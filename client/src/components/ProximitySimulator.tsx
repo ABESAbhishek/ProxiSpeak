@@ -9,12 +9,16 @@ import {
 
 interface ProximitySimulatorProps {
   peers: Record<string, RemotePeerAudio>;
+  localIsSpeaking?: boolean;
   onSetSpatial: (peerId: string, volume: number, pan?: number) => void;
+  onLocalMove?: (position: { x: number; y: number; z: number }) => void;
 }
 
 export const ProximitySimulator: React.FC<ProximitySimulatorProps> = ({
   peers,
-  onSetSpatial
+  localIsSpeaking,
+  onSetSpatial,
+  onLocalMove
 }) => {
   const [localPos, setLocalPos] = useState<{ x: number; y: number }>({ x: 140, y: 130 });
   const [listenerHeadingDeg, setListenerHeadingDeg] = useState<number>(0); // 0 = Facing North
@@ -22,13 +26,16 @@ export const ProximitySimulator: React.FC<ProximitySimulatorProps> = ({
   const [isSimulating, setIsSimulating] = useState<boolean>(true);
   const [model, setModel] = useState<AttenuationModel>('linear');
 
-  // Sync positions when peers change
+  // Sync positions when peers change (adopts real positions from Member 2 signaling when available)
   useEffect(() => {
     setPeerPositions((prev) => {
       const next: Record<string, { x: number; y: number }> = { ...prev };
       const peerIds = Object.keys(peers);
       peerIds.forEach((id, index) => {
-        if (!next[id]) {
+        const peer = peers[id];
+        if (peer?.position && typeof peer.position.x === 'number' && typeof peer.position.y === 'number') {
+          next[id] = { x: peer.position.x, y: peer.position.y };
+        } else if (!next[id]) {
           // Distribute initial positions
           next[id] = {
             x: 90 + ((index * 130) % 240),
@@ -167,7 +174,9 @@ export const ProximitySimulator: React.FC<ProximitySimulatorProps> = ({
             const handleMouseMove = (moveEvent: MouseEvent) => {
               const x = Math.max(20, Math.min(rect.width - 20, moveEvent.clientX - rect.left));
               const y = Math.max(20, Math.min(rect.height - 20, moveEvent.clientY - rect.top));
-              setLocalPos({ x, y });
+              const roundedPos = { x: Math.round(x), y: Math.round(y) };
+              setLocalPos(roundedPos);
+              onLocalMove?.({ x: roundedPos.x, y: roundedPos.y, z: 0 });
             };
 
             const handleMouseUp = () => {
@@ -188,8 +197,11 @@ export const ProximitySimulator: React.FC<ProximitySimulatorProps> = ({
               className="absolute -top-3 w-0 h-0 border-l-[5px] border-l-transparent border-r-[5px] border-r-transparent border-b-[8px] border-b-cyan-400 filter drop-shadow"
             />
 
-            <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-indigo-600 to-cyan-500 border-2 border-white shadow-xl flex items-center justify-center text-xs font-bold text-white shadow-indigo-500/40">
+            <div className="relative w-10 h-10 rounded-full bg-gradient-to-tr from-indigo-600 to-cyan-500 border-2 border-white shadow-xl flex items-center justify-center text-xs font-bold text-white shadow-indigo-500/40">
               ME
+              {localIsSpeaking && (
+                <span className="absolute -inset-1.5 rounded-full bg-cyan-400/30 border border-cyan-400/50 animate-ping pointer-events-none" />
+              )}
             </div>
             <span className="text-[10px] font-mono text-indigo-200 font-semibold mt-1 bg-slate-900/95 px-2 py-0.5 rounded border border-indigo-500/40 shadow-sm whitespace-nowrap">
               ({Math.round(localPos.x)}, {Math.round(localPos.y)})
@@ -202,6 +214,7 @@ export const ProximitySimulator: React.FC<ProximitySimulatorProps> = ({
           const pos = peerPositions[peerId] || { x: 220, y: 120 };
           const dist = Math.round(Math.hypot(pos.x - localPos.x, pos.y - localPos.y));
           const pan = peer.pan ?? 0;
+          const isPeerSpeaking = peer.isSpeaking;
 
           return (
             <div
@@ -209,18 +222,49 @@ export const ProximitySimulator: React.FC<ProximitySimulatorProps> = ({
               style={{
                 transform: `translate(${pos.x}px, ${pos.y}px)`
               }}
-              className="absolute top-0 left-0 -ml-5 -mt-5 z-10 select-none"
+              className="absolute top-0 left-0 -ml-5 -mt-5 z-10 select-none cursor-grab active:cursor-grabbing"
+              onMouseDown={(e) => {
+                const rect = e.currentTarget.parentElement?.getBoundingClientRect();
+                if (!rect) return;
+
+                const handlePeerMove = (moveEvent: MouseEvent) => {
+                  const x = Math.max(20, Math.min(rect.width - 20, moveEvent.clientX - rect.left));
+                  const y = Math.max(20, Math.min(rect.height - 20, moveEvent.clientY - rect.top));
+                  setPeerPositions((prev) => ({
+                    ...prev,
+                    [peerId]: { x: Math.round(x), y: Math.round(y) }
+                  }));
+                };
+
+                const handlePeerUp = () => {
+                  window.removeEventListener('mousemove', handlePeerMove);
+                  window.removeEventListener('mouseup', handlePeerUp);
+                };
+
+                window.addEventListener('mousemove', handlePeerMove);
+                window.addEventListener('mouseup', handlePeerUp);
+              }}
             >
               <div className="flex flex-col items-center">
                 <div
-                  className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold text-white border-2 border-slate-700 shadow-md ${
-                    peer.connectionState === 'connected' ? 'bg-emerald-600' : 'bg-slate-700'
+                  className={`relative w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold text-white border-2 border-slate-700 shadow-md ${
+                    isPeerSpeaking
+                      ? 'bg-emerald-500 ring-2 ring-emerald-400 ring-offset-2 ring-offset-slate-950 animate-pulse'
+                      : peer.connectionState === 'connected'
+                      ? 'bg-emerald-600'
+                      : 'bg-slate-700'
                   }`}
                 >
                   {peer.username.substring(0, 2).toUpperCase()}
+                  {isPeerSpeaking && (
+                    <span className="absolute -inset-1.5 rounded-full bg-emerald-400/30 border border-emerald-400/50 animate-ping pointer-events-none" />
+                  )}
                 </div>
                 <div className="text-[9px] font-mono mt-1 bg-slate-900/95 px-2 py-1 rounded text-slate-300 border border-slate-800 text-center shadow-md">
-                  <div className="font-semibold text-slate-100">{peer.username}</div>
+                  <div className="font-semibold text-slate-100 flex items-center justify-center gap-1">
+                    <span>{peer.username}</span>
+                    {peer.isMuted && <span className="text-rose-400 text-[8px]">(Muted)</span>}
+                  </div>
                   <div className="text-emerald-400 font-bold">{Math.round((peer.volume ?? 1) * 100)}% vol</div>
                   <div className="text-[8px] text-cyan-400">
                     Pan: {pan > 0.05 ? `R ${Math.round(pan * 100)}%` : pan < -0.05 ? `L ${Math.round(Math.abs(pan) * 100)}%` : 'Center'}

@@ -74,12 +74,44 @@ clientB.on('webrtc:ice-candidate', (payload) => {
   if (payload.senderId === clientAId && payload.candidate.candidate) {
     iceReceived = true;
 
+    // Test spatial position update
+    console.log(`[TEST] Client A emitting 'position:update' to room...`);
+    clientA.emit('position:update', {
+      position: { x: 150, y: 120, z: 0 }
+    });
+  }
+});
+
+let positionReceived = false;
+let profileReceived = false;
+
+clientB.on('position:update', (payload) => {
+  if (payload.userId === clientAId && payload.position.x === 150) {
+    console.log(`[PASS] Client B received 'position:update' from ${payload.userId}`);
+    positionReceived = true;
+
+    // Test profile update
+    console.log(`[TEST] Client A emitting 'user:update-profile' (isSpeaking: true)...`);
+    clientA.emit('user:update-profile', {
+      isSpeaking: true,
+      isMuted: false
+    });
+  }
+});
+
+clientB.on('user:update-profile', (payload) => {
+  if (payload.userId === clientAId && payload.isSpeaking === true) {
+    console.log(`[PASS] Client B received 'user:update-profile' from ${payload.userId}`);
+    profileReceived = true;
+
     console.log('\n======================================================');
-    console.log('  ALL WEBRTC SIGNALING EVENTS VERIFIED SUCCESSFULLY!');
+    console.log('  ALL WEBRTC & SIGNALING EVENTS VERIFIED SUCCESSFULLY!');
     console.log(`  1. webrtc:offer         -> ${offerReceived ? 'VERIFIED' : 'FAILED'}`);
     console.log(`  2. webrtc:answer        -> ${answerReceived ? 'VERIFIED' : 'FAILED'}`);
     console.log(`  3. webrtc:ice-candidate -> ${iceReceived ? 'VERIFIED' : 'FAILED'}`);
     console.log(`  4. signaling:pong (RTT) -> ${pongReceived ? 'VERIFIED' : 'FAILED'}`);
+    console.log(`  5. position:update      -> ${positionReceived ? 'VERIFIED' : 'FAILED'}`);
+    console.log(`  6. user:update-profile  -> ${profileReceived ? 'VERIFIED' : 'FAILED'}`);
     console.log('======================================================\n');
 
     clientA.disconnect();
@@ -102,10 +134,11 @@ clientA.on('user:join', (user) => {
 });
 
 setTimeout(() => {
-  if (!iceReceived) {
+  if (!iceReceived || !positionReceived || !profileReceived) {
     console.error('[FAIL] Timeout waiting for WebRTC signaling exchange.');
     clientA.disconnect();
     clientB.disconnect();
     process.exit(1);
   }
 }, 5000);
+
