@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 import React from 'react';
 import { useMicrophone } from './hooks/useMicrophone';
 import { useWebRTCAudio } from './hooks/useWebRTCAudio';
@@ -202,13 +201,4 @@ export const App: React.FC = () => {
   );
 };
 
-=======
-import { VirtualOffice } from "./components/VirtualOffice";
-import "./App.css";
-function App() {
-  return (
-    <VirtualOffice currentUserId="user123" />
-  );
-}
->>>>>>> origin/main
 export default App;
