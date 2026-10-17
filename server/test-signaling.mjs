@@ -120,8 +120,12 @@ clientB.on('user:update-profile', (payload) => {
   }
 });
 
-// When Client A detects Client B joined, trigger offer
-clientA.on('user:join', (user) => {
+// Client A may join before or after Client B. Use both the room snapshot and
+// join broadcast so the integration test does not depend on connect ordering.
+const offeredPeerIds = new Set();
+const offerToPeer = (user) => {
+  if (!user?.id || user.id !== clientBId || user.id === clientAId || offeredPeerIds.has(user.id)) return;
+  offeredPeerIds.add(user.id);
   console.log(`[TEST] Client A detected peer joined: ${user.username} (${user.id})`);
   setTimeout(() => {
     console.log(`[TEST] Client A sending 'webrtc:offer' to ${user.id}`);
@@ -131,6 +135,11 @@ clientA.on('user:join', (user) => {
       sdp: { type: 'offer', sdp: 'v=0\r\no=mock_a...' }
     });
   }, 300);
+};
+
+clientA.on('user:join', offerToPeer);
+clientA.on('world:state', (payload) => {
+  Object.values(payload?.users || {}).forEach(offerToPeer);
 });
 
 setTimeout(() => {
