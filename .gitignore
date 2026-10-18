@@ -1,27 +1,23 @@
 # Dependencies
 node_modules/
-*/node_modules/
+client/node_modules/
 
-# Build artifacts
+# Build output
 dist/
-build/
-*/dist/
+client/dist/
 
-# Environment files
+# Environment variables and secrets
 .env
 .env.*
 !.env.example
 
 # Logs
 *.log
-npm-debug.log*
 
-# Editor directories
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# Editor settings
 .vscode/
 .idea/
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
-.DS_Store

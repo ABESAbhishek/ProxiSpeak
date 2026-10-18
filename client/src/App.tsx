@@ -1,22 +1,4 @@
-import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  Activity,
-  AudioLines,
-  ChevronDown,
-  Headphones,
-  LayoutDashboard,
-  LocateFixed,
-  MapPin,
-  Mic,
-  MicOff,
-  Radio,
-  Settings2,
-  ShieldCheck,
-  Users,
-  Volume2,
-  Wifi,
-} from 'lucide-react';
-
+import React from 'react';
 import { useMicrophone } from './hooks/useMicrophone';
 import { useWebRTCAudio } from './hooks/useWebRTCAudio';
 import { useDeviceLocation } from './hooks/useDeviceLocation';
