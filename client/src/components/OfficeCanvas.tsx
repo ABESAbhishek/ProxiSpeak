@@ -8,6 +8,7 @@ type Position = {
 };
 
 type VirtualOfficeProps = {
+  displayName: string;
   onMove: (position: Position) => void;
   devicePosition?: { x: number; y: number };
   isLocationTracking?: boolean;
@@ -30,7 +31,7 @@ const DEMO_AVATARS: DemoAvatar[] = [
   { x: 0.25, y: 0.75, name: 'Jordan', color: '#f472b6' },
 ];
 
-const VirtualOffice: React.FC<VirtualOfficeProps> = ({ onMove, devicePosition, isLocationTracking = false }) => {
+const VirtualOffice: React.FC<VirtualOfficeProps> = ({ displayName, onMove, devicePosition, isLocationTracking = false }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const draggingRef = useRef(false);
 
@@ -434,9 +435,9 @@ const VirtualOffice: React.FC<VirtualOfficeProps> = ({ onMove, devicePosition, i
     });
 
     // Local player
-    drawAvatar(px, py, 'You', '#c96e51', true);
+    drawAvatar(px, py, displayName, '#c96e51', true);
     ctx.restore();
-  }, [position]);
+  }, [displayName, position]);
 
   const handlePointerDown = (
     event: React.PointerEvent<HTMLCanvasElement>

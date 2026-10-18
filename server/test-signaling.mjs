@@ -1,6 +1,6 @@
 import { io } from '../client/node_modules/socket.io-client/build/esm/index.js';
 
-const SERVER_URL = 'http://localhost:3001';
+const SERVER_URL = process.env.TEST_SERVER_URL || 'http://localhost:3001';
 
 console.log('--- Starting ProxiSpeak Two-Peer WebRTC Signaling Integration Test ---');
 

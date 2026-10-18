@@ -6,19 +6,21 @@ import type {
   UserJoinPayload
 } from '../types';
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || `${window.location.protocol}//${window.location.hostname}:3001`;
+const SERVER_URL = import.meta.env.VITE_SOCKET_URL || import.meta.env.VITE_SERVER_URL || `${window.location.protocol}//${window.location.hostname}:3001`;
 
 /**
  * Singleton Socket.io client connection to avoid duplicate sockets.
  */
 export const socket: Socket = io(SERVER_URL, {
-  autoConnect: true,
+  autoConnect: false,
   reconnection: true,
+  withCredentials: true,
   reconnectionAttempts: 10,
   reconnectionDelay: 1000
 });
 
 export const socketService = {
+  disconnect(): void { if (socket.connected) socket.disconnect(); },
   get socketId(): string | undefined {
     return socket.id;
   },
@@ -27,8 +29,8 @@ export const socketService = {
     return socket.connected;
   },
 
-  join(payload: UserJoinPayload): void {
-    socket.emit('user:join', payload);
+  join(payload: UserJoinPayload, acknowledge?: (result: { ok: boolean; userId?: string; roomId?: string; message?: string }) => void): void {
+    socket.emit('user:join', payload, acknowledge);
   },
 
   // 1. "webrtc:offer"
@@ -62,8 +64,8 @@ export const socketService = {
   },
 
   // 7. Room switching and world state refresh
-  switchRoom(roomId: string, username?: string): void {
-    socket.emit('user:join', { roomId, username });
+  switchRoom(roomId: string, username: string, position: { x: number; y: number; z: number }): void {
+    socket.emit('user:join', { roomId, username, position });
   },
 
   syncWorld(roomId?: string): void {

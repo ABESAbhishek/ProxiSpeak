@@ -6,9 +6,14 @@ import type { Position3D, RemotePeerAudio } from '../types';
 
 type OfficeScene3DProps = {
   position: Position3D;
+  displayName: string;
+  avatarUrl?: string;
   onMove: (position: Position3D) => void;
   peers: RemotePeerAudio[];
   isLocationTracking: boolean;
+  theme: 'dark' | 'light';
+  selectedParticipantId: string | null;
+  onSelectParticipant: (participantId: string | null) => void;
 };
 
 const SCALE = 0.018;
@@ -181,16 +186,19 @@ const MeetingTable: React.FC = () => (
 
 const Avatar: React.FC<{
   name: string;
+  avatarUrl?: string;
   local?: boolean;
   muted?: boolean;
   speaking?: boolean;
   selected?: boolean;
+  accentColor: string;
+  speakingColor: string;
   onSelect?: () => void;
-}> = ({ name, local = false, muted = false, speaking = false, selected = false, onSelect }) => (
+}> = ({ name, avatarUrl, local = false, muted = false, speaking = false, selected = false, accentColor, speakingColor, onSelect }) => (
   <group onClick={(event) => { event.stopPropagation(); onSelect?.(); }}>
     <mesh position={[0, 0.05, 0]} castShadow receiveShadow>
       <capsuleGeometry args={[0.28, 0.45, 6, 12]} />
-      <meshStandardMaterial color={local ? '#bd674b' : '#799078'} roughness={0.76} />
+      <meshStandardMaterial color={local ? accentColor : '#718a98'} roughness={0.76} />
     </mesh>
     <mesh position={[0, 0.55, 0]} castShadow>
       <sphereGeometry args={[0.22, 24, 16]} />
@@ -203,12 +211,12 @@ const Avatar: React.FC<{
     {(local || speaking || selected) && (
       <mesh position={[0, 0.012, 0]} rotation={[-Math.PI / 2, 0, 0]}>
         <ringGeometry args={[0.39, 0.44, 48]} />
-        <meshBasicMaterial color={speaking ? '#78936e' : '#bd674b'} transparent opacity={speaking ? 0.9 : 0.76} side={THREE.DoubleSide} />
+        <meshBasicMaterial color={speaking ? speakingColor : accentColor} transparent opacity={speaking ? 0.9 : 0.76} side={THREE.DoubleSide} />
       </mesh>
     )}
     <Html position={[0, 1.02, 0]} center distanceFactor={11}>
       <button type="button" className={`scene-avatar-label ${local ? 'is-local' : ''} ${selected ? 'is-selected' : ''}`} onClick={(event) => { event.stopPropagation(); onSelect?.(); }}>
-        <span>{name}</span>{local ? <small>You</small> : muted ? <small>Muted</small> : speaking ? <small>Speaking</small> : null}
+        {avatarUrl ? <img className="scene-avatar-photo" src={avatarUrl} alt="" /> : null}<span>{name}</span>{local ? <small>You</small> : muted ? <small>Muted</small> : speaking ? <small>Speaking</small> : null}
       </button>
     </Html>
   </group>
@@ -216,10 +224,14 @@ const Avatar: React.FC<{
 
 const MovingLocalAvatar: React.FC<{
   position: Position3D;
+  displayName: string;
+  avatarUrl?: string;
   onMove: (position: Position3D) => void;
   isLocationTracking: boolean;
   onSelect: () => void;
-}> = ({ position, onMove, isLocationTracking, onSelect }) => {
+  accentColor: string;
+  speakingColor: string;
+}> = ({ position, displayName, avatarUrl, onMove, isLocationTracking, onSelect, accentColor, speakingColor }) => {
   const avatar = useRef<THREE.Group>(null);
   const target = useRef(toWorld(position));
   const keys = useRef(new Set<string>());
@@ -304,49 +316,52 @@ const MovingLocalAvatar: React.FC<{
 
   return (
     <group ref={avatar}>
-      <Avatar name="You" local selected onSelect={onSelect} />
+      <Avatar name={displayName} avatarUrl={avatarUrl} local selected accentColor={accentColor} speakingColor={speakingColor} onSelect={onSelect} />
     </group>
   );
 };
 
-const OfficeContents: React.FC<OfficeScene3DProps & { onReady: () => void }> = ({ position, onMove, peers, isLocationTracking, onReady }) => {
-  const [selectedPeer, setSelectedPeer] = useState<string | null>(null);
+const OfficeContents: React.FC<OfficeScene3DProps & { onReady: () => void }> = ({ position, displayName, avatarUrl, onMove, peers, isLocationTracking, theme, selectedParticipantId, onSelectParticipant, onReady }) => {
   const localWorld = useMemo(() => toWorld(position), [position]);
   const audiblePeers = peers.filter((peer) => peer.position);
-  const selectedParticipant = audiblePeers.find((peer) => peer.peerId === selectedPeer);
+  const selectedParticipant = audiblePeers.find((peer) => peer.peerId === selectedParticipantId);
   const selectedWorld = selectedParticipant?.position ? toWorld(selectedParticipant.position) : localWorld;
+  const palette = useMemo(() => theme === 'dark'
+    ? { background: '#0B0F14', floor: '#1C2734', grid: '#2B3645', wall: '#101720', trim: '#2B3645', ambient: '#d9e5ee', local: '#10B981', teammate: '#6EE7B7' }
+    : { background: '#F5F7FA', floor: '#F8FAFC', grid: '#DCE3EA', wall: '#EDF2F7', trim: '#DCE3EA', ambient: '#fff8ee', local: '#047857', teammate: '#10B981',
+    }, [theme]);
   useEffect(() => { onReady(); }, [onReady]);
 
   return (
     <>
-      <color attach="background" args={['#eee4d6']} />
-      <ambientLight intensity={1.25} color="#fff5e6" />
-      <hemisphereLight args={['#fff7e9', '#876a4d', 1.05]} />
-      <directionalLight position={[-5, 11, 6]} intensity={2.2} color="#fff1d5" castShadow shadow-mapSize-width={1024} shadow-mapSize-height={1024} shadow-camera-left={-12} shadow-camera-right={12} shadow-camera-top={10} shadow-camera-bottom={-10} />
-      <pointLight position={[0, 4.4, -2.4]} intensity={35} distance={12} color="#ffe1b4" />
+      <color attach="background" args={[palette.background]} />
+      <ambientLight intensity={theme === 'dark' ? 0.85 : 1.25} color={palette.ambient} />
+      <hemisphereLight args={[theme === 'dark' ? '#b7c8d8' : '#fff7e9', theme === 'dark' ? '#263444' : '#876a4d', 1.05]} />
+      <directionalLight position={[-5, 11, 6]} intensity={theme === 'dark' ? 1.6 : 2.2} color={theme === 'dark' ? '#dbe9f2' : '#fff1d5'} castShadow shadow-mapSize-width={1024} shadow-mapSize-height={1024} shadow-camera-left={-12} shadow-camera-right={12} shadow-camera-top={10} shadow-camera-bottom={-10} />
+      <pointLight position={[0, 4.4, -2.4]} intensity={theme === 'dark' ? 24 : 35} distance={12} color={theme === 'dark' ? '#6EE7B7' : '#ffe1b4'} />
 
       <mesh position={[0, -0.18, 0]} receiveShadow>
         <boxGeometry args={[FLOOR_WIDTH, 0.36, FLOOR_DEPTH]} />
-        <meshStandardMaterial color="#dec7a8" roughness={0.78} />
+        <meshStandardMaterial color={palette.floor} roughness={0.78} />
       </mesh>
-      <gridHelper args={[FLOOR_WIDTH, 40, '#cbb597', '#d3c1a8']} position={[0, 0.006, 0]} />
+      <gridHelper args={[FLOOR_WIDTH, 40, palette.grid, palette.grid]} position={[0, 0.006, 0]} />
 
       {/* Walnut skirting and a bright open-front room make the floor easy to read. */}
       <mesh position={[0, 1.55, -HALF_DEPTH]} castShadow>
         <boxGeometry args={[FLOOR_WIDTH, 3.1, 0.24]} />
-        <meshStandardMaterial color="#e8d6bf" roughness={0.82} />
+        <meshStandardMaterial color={palette.wall} roughness={0.82} />
       </mesh>
       <mesh position={[0, 0.22, -HALF_DEPTH + 0.14]}>
         <boxGeometry args={[FLOOR_WIDTH, 0.38, 0.035]} />
-        <meshStandardMaterial color="#896348" roughness={0.68} />
+        <meshStandardMaterial color={palette.trim} roughness={0.68} />
       </mesh>
       <mesh position={[-HALF_WIDTH, 1.1, 0]} castShadow>
         <boxGeometry args={[0.22, 2.2, FLOOR_DEPTH]} />
-        <meshStandardMaterial color="#e8d6bf" roughness={0.82} />
+        <meshStandardMaterial color={palette.wall} roughness={0.82} />
       </mesh>
       <mesh position={[HALF_WIDTH, 1.1, 0]} castShadow>
         <boxGeometry args={[0.22, 2.2, FLOOR_DEPTH]} />
-        <meshStandardMaterial color="#e8d6bf" roughness={0.82} />
+        <meshStandardMaterial color={palette.wall} roughness={0.82} />
       </mesh>
       <WindowPanel position={[-5.2, 2.03, -5.43]} />
       <WindowPanel position={[-1.75, 2.03, -5.43]} />
@@ -367,9 +382,9 @@ const OfficeContents: React.FC<OfficeScene3DProps & { onReady: () => void }> = (
 
       <mesh position={[0, 0.012, 0]} rotation={[-Math.PI / 2, 0, 0]}>
         <ringGeometry args={[0.6, NEARBY_DISTANCE * SCALE, 64]} />
-        <meshBasicMaterial color="#bd674b" transparent opacity={0.1} side={THREE.DoubleSide} />
+        <meshBasicMaterial color={palette.local} transparent opacity={0.12} side={THREE.DoubleSide} />
       </mesh>
-      <MovingLocalAvatar position={position} onMove={onMove} isLocationTracking={isLocationTracking} onSelect={() => setSelectedPeer(null)} />
+      <MovingLocalAvatar position={position} displayName={displayName} avatarUrl={avatarUrl} onMove={onMove} isLocationTracking={isLocationTracking} onSelect={() => onSelectParticipant(null)} accentColor={palette.local} speakingColor={palette.teammate} />
 
       {audiblePeers.map((peer) => {
         const point = toWorld(peer.position!);
@@ -380,25 +395,28 @@ const OfficeContents: React.FC<OfficeScene3DProps & { onReady: () => void }> = (
             {nearby && (
               <mesh position={[0, 0.014, 0]} rotation={[-Math.PI / 2, 0, 0]}>
                 <ringGeometry args={[0.38, 0.46, 48]} />
-                <meshBasicMaterial color="#78936e" transparent opacity={0.28} side={THREE.DoubleSide} />
+                <meshBasicMaterial color={palette.teammate} transparent opacity={0.28} side={THREE.DoubleSide} />
               </mesh>
             )}
             <Avatar
               name={peer.username}
+              avatarUrl={peer.avatarUrl}
               muted={peer.isMuted}
               speaking={Boolean(peer.isSpeaking)}
-              selected={selectedPeer === peer.peerId}
-              onSelect={() => setSelectedPeer(peer.peerId)}
+              selected={selectedParticipantId === peer.peerId}
+              accentColor={palette.local}
+              speakingColor={palette.teammate}
+              onSelect={() => onSelectParticipant(peer.peerId)}
             />
           </group>
         );
       })}
 
-      {selectedPeer && (
+      {selectedParticipantId && (
         <Html position={[selectedWorld.x, 2.15, selectedWorld.z]} center distanceFactor={14}>
           <div className="scene-selection-card">
-            {selectedParticipant?.username ?? 'You'}
-            <small>{selectedParticipant?.connectionState ?? 'Your position'}</small>
+            {selectedParticipant?.username ?? 'Member'}
+            <small>{selectedParticipant?.connectionState ?? 'Online'}</small>
           </div>
         </Html>
       )}

@@ -43,7 +43,9 @@ export interface Position3D {
 
 export interface UserProfile {
   id: string;
+  accountId?: string;
   username: string;
+  avatarUrl?: string;
   position: Position3D;
   roomId?: string;
   isMuted?: boolean;
@@ -78,6 +80,7 @@ export interface UserProfileUpdatePayload {
   isMuted?: boolean;
   isSpeaking?: boolean;
   username?: string;
+  avatarUrl?: string;
 }
 
 export interface RoomInfo {
@@ -108,7 +111,9 @@ export type MicrophoneStatus =
 
 export interface RemotePeerAudio {
   peerId: string;
+  accountId?: string;
   username: string;
+  avatarUrl?: string;
   stream: MediaStream;
   connectionState: WebRTCConnectionState;
   /** Volume level between 0.0 (silent) and 1.0 (full volume), ready for Week 2 proximity calculation */

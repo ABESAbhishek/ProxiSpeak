@@ -3,9 +3,9 @@ import { Compass, Sparkles, Sliders, Volume2, Move } from 'lucide-react';
 import type { RemotePeerAudio } from '../types';
 import {
   computeSpatialAudio,
-  AttenuationModel,
   DEFAULT_SPATIAL_CONFIG
 } from '../services/spatialAudio';
+import type { AttenuationModel } from '../services/spatialAudio';
 
 interface ProximitySimulatorProps {
   peers: Record<string, RemotePeerAudio>;

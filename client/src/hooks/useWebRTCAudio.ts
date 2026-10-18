@@ -18,6 +18,9 @@ import type {
 export interface UseWebRTCAudioResult {
   localSocketId: string | null;
   isConnected: boolean;
+  isRegistered: boolean;
+  joinError: string | null;
+  retryJoin: () => void;
   signalingLatencyMs: number | null;
   currentRoomId: string;
   peers: Record<string, RemotePeerAudio>;
@@ -35,16 +38,41 @@ export interface UseWebRTCAudioResult {
 export function useWebRTCAudio(
   localStream: MediaStream | null,
   isSpeaking: boolean = false,
-  isMuted: boolean = false
+  isMuted: boolean = false,
+  initialPosition: Position3D = { x: 500, y: 280, z: 0 },
+  displayName = '',
+  joinEnabled = false
 ): UseWebRTCAudioResult {
   const [localSocketId, setLocalSocketId] = useState<string | null>(socket.id || null);
   const [isConnected, setIsConnected] = useState<boolean>(socket.connected);
+  const [isRegistered, setIsRegistered] = useState(false);
+  const [joinError, setJoinError] = useState<string | null>(null);
+  const [retryNonce, setRetryNonce] = useState(0);
   const [currentRoomId, setCurrentRoomId] = useState<string>('global-space');
   const [signalingLatencyMs, setSignalingLatencyMs] = useState<number | null>(null);
   const [peers, setPeers] = useState<Record<string, RemotePeerAudio>>({});
   const [signalingLogs, setSignalingLogs] = useState<SignalingLogEntry[]>([]);
 
   const webrtcManagerRef = useRef<WebRTCManager | null>(null);
+  const remotePeerIdsRef = useRef(new Set<string>());
+  const initialPositionRef = useRef(initialPosition);
+  const displayNameRef = useRef(displayName);
+  const registeredRef = useRef(false);
+  const currentRoomIdRef = useRef(currentRoomId);
+  const joinTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    displayNameRef.current = displayName;
+  }, [displayName]);
+
+  const retryJoin = useCallback(() => {
+    setJoinError(null);
+    registeredRef.current = false;
+    setIsRegistered(false);
+    if (joinTimeoutRef.current) clearTimeout(joinTimeoutRef.current);
+    if (socket.connected) socket.disconnect();
+    setRetryNonce((value) => value + 1);
+  }, []);
 
   const addLog = useCallback(
     (direction: 'in' | 'out', type: SignalingLogEntry['type'], summary: string, details?: unknown) => {
@@ -84,6 +112,7 @@ export function useWebRTCAudio(
             ...prev,
             [peerId]: {
               peerId,
+              accountId: existing?.accountId,
               username: existing?.username || `Peer_${peerId.substring(0, 4)}`,
               stream,
               connectionState: existing?.connectionState || 'connecting',
@@ -147,6 +176,10 @@ export function useWebRTCAudio(
       const id = socket.id || null;
       setLocalSocketId(id);
       setIsConnected(true);
+      setIsRegistered(false);
+      registeredRef.current = false;
+      setJoinError(null);
+      if (joinTimeoutRef.current) clearTimeout(joinTimeoutRef.current);
       if (id && webrtcManagerRef.current) {
         webrtcManagerRef.current.setLocalSocketId(id);
       }
@@ -154,43 +187,84 @@ export function useWebRTCAudio(
 
       // Announce join
       socketService.join({
-        username: `User_${id?.substring(0, 4) || 'Guest'}`
+        username: displayNameRef.current,
+        position: initialPositionRef.current,
+        roomId: currentRoomIdRef.current
+      }, (result) => {
+        if (joinTimeoutRef.current) clearTimeout(joinTimeoutRef.current);
+        if (result.ok) {
+          setIsRegistered(true);
+          registeredRef.current = true;
+          setJoinError(null);
+          if (result.userId && webrtcManagerRef.current) webrtcManagerRef.current.setLocalSocketId(result.userId);
+          addLog('in', 'user:join', `Registered as ${displayNameRef.current} (${result.userId})`);
+        } else {
+          setJoinError(result.message || 'Unable to join the office. Please try again.');
+        }
       });
+      joinTimeoutRef.current = setTimeout(() => {
+        if (!registeredRef.current) setJoinError('The server did not confirm your registration. Check the connection and retry.');
+      }, 8000);
     };
 
     const handleDisconnect = () => {
       setIsConnected(false);
+      setIsRegistered(false);
+      registeredRef.current = false;
+      if (joinTimeoutRef.current) clearTimeout(joinTimeoutRef.current);
+      remotePeerIdsRef.current.forEach((peerId) => webrtcManagerRef.current?.closePeer(peerId));
+      remotePeerIdsRef.current.clear();
+      setPeers({});
       addLog('in', 'user:left', 'Disconnected from signaling server');
+    };
+
+    const handleConnectError = () => {
+      setJoinError('Could not connect to the office server. Check your connection and retry.');
     };
 
     const handleWorldState = (payload: WorldStatePayload) => {
       addLog('in', 'world:state', `Received world state with ${Object.keys(payload.users || {}).length} users`);
       const currentId = socket.id;
+      const localUser = currentId ? payload.users?.[currentId] : undefined;
+      // Older deployed servers confirm a successful join by returning the
+      // registered user in world:state instead of invoking the Socket.IO ack.
+      if (localUser?.username === displayNameRef.current) {
+        registeredRef.current = true;
+        setIsRegistered(true);
+        setJoinError(null);
+        if (joinTimeoutRef.current) clearTimeout(joinTimeoutRef.current);
+      }
+      const remoteUsers = Object.values(payload.users || {}).filter((user) => user.id !== currentId);
+      const nextIds = new Set(remoteUsers.map((user) => user.id));
+      remotePeerIdsRef.current.forEach((peerId) => {
+        if (!nextIds.has(peerId)) webrtcManagerRef.current?.closePeer(peerId);
+      });
+      remotePeerIdsRef.current = nextIds;
 
       setPeers((prev) => {
-        const next: Record<string, RemotePeerAudio> = { ...prev };
-        Object.values(payload.users || {}).forEach((user: UserProfile) => {
-          if (user.id !== currentId) {
-            if (!next[user.id]) {
-              next[user.id] = {
-                peerId: user.id,
-                username: user.username,
-                stream: new MediaStream(),
-                connectionState: 'new',
-                volume: 1.0,
-                isMuted: user.isMuted || false,
-                isSpeaking: user.isSpeaking || false,
-                position: user.position
-              };
-            } else {
-              next[user.id] = {
-                ...next[user.id],
-                position: user.position || next[user.id].position,
-                isMuted: user.isMuted ?? next[user.id].isMuted,
-                isSpeaking: user.isSpeaking ?? next[user.id].isSpeaking
-              };
-            }
-          }
+        const next: Record<string, RemotePeerAudio> = {};
+        remoteUsers.forEach((user: UserProfile) => {
+          const existing = prev[user.id];
+          next[user.id] = existing ? {
+            ...existing,
+            accountId: user.accountId ?? existing.accountId,
+            username: user.username || existing.username,
+            avatarUrl: user.avatarUrl ?? existing.avatarUrl,
+            position: user.position || existing.position,
+            isMuted: user.isMuted ?? existing.isMuted,
+            isSpeaking: user.isSpeaking ?? existing.isSpeaking
+          } : {
+            peerId: user.id,
+            accountId: user.accountId,
+            username: user.username,
+            avatarUrl: user.avatarUrl,
+            stream: new MediaStream(),
+            connectionState: 'new',
+            volume: 1.0,
+            isMuted: user.isMuted || false,
+            isSpeaking: user.isSpeaking || false,
+            position: user.position
+          };
         });
         return next;
       });
@@ -198,6 +272,7 @@ export function useWebRTCAudio(
 
     const handleUserJoin = (user: UserProfile) => {
       if (user.id === socket.id) return;
+      remotePeerIdsRef.current.add(user.id);
       addLog('in', 'user:join', `Peer joined: ${user.username} (${user.id})`);
 
       setPeers((prev) => {
@@ -206,7 +281,9 @@ export function useWebRTCAudio(
           ...prev,
           [user.id]: {
             peerId: user.id,
+            accountId: user.accountId,
             username: user.username,
+            avatarUrl: user.avatarUrl,
             stream: new MediaStream(),
             connectionState: 'new',
             volume: 1.0,
@@ -219,6 +296,7 @@ export function useWebRTCAudio(
     };
 
     const handleUserLeft = (data: UserLeftPayload) => {
+      remotePeerIdsRef.current.delete(data.userId);
       addLog('in', 'user:left', `Peer left: ${data.userId}`);
       if (webrtcManagerRef.current) {
         webrtcManagerRef.current.closePeer(data.userId);
@@ -274,7 +352,7 @@ export function useWebRTCAudio(
     };
 
     // 6. "user:update-profile" mic mute/speaking status from peers
-    const handleProfileUpdate = (payload: { userId: string; isMuted?: boolean; isSpeaking?: boolean; username?: string }) => {
+    const handleProfileUpdate = (payload: { userId: string; isMuted?: boolean; isSpeaking?: boolean; username?: string; avatarUrl?: string }) => {
       setPeers((prev) => {
         const existing = prev[payload.userId];
         if (!existing) return prev;
@@ -284,7 +362,8 @@ export function useWebRTCAudio(
             ...existing,
             isMuted: typeof payload.isMuted === 'boolean' ? payload.isMuted : existing.isMuted,
             isSpeaking: typeof payload.isSpeaking === 'boolean' ? payload.isSpeaking : existing.isSpeaking,
-            username: payload.username || existing.username
+            username: payload.username || existing.username,
+            avatarUrl: payload.avatarUrl ?? existing.avatarUrl
           }
         };
       });
@@ -295,9 +374,14 @@ export function useWebRTCAudio(
       addLog('in', 'webrtc:error', payload.message, payload);
     };
 
+    const handleServerError = (payload: { message?: string }) => {
+      if (!registeredRef.current) setJoinError(payload.message || 'The server could not register your session.');
+    };
+
     // Bind listeners
     socket.on('connect', handleConnect);
     socket.on('disconnect', handleDisconnect);
+    socket.on('connect_error', handleConnectError);
     socket.on('world:state', handleWorldState);
     socket.on('user:join', handleUserJoin);
     socket.on('user:left', handleUserLeft);
@@ -309,15 +393,21 @@ export function useWebRTCAudio(
     socket.on('position:update', handlePositionUpdate);
     socket.on('user:update-profile', handleProfileUpdate);
     socket.on('webrtc:error', handleWebRTCError);
+    socket.on('server:error', handleServerError);
 
-    if (socket.connected) {
+    if (!joinEnabled) {
+      if (socket.connected) socket.disconnect();
+    } else if (socket.connected) {
       handleConnect();
+    } else {
+      socket.connect();
     }
 
     // Cleanup: Strictly remove listeners to avoid memory leaks or duplicate triggers
     return () => {
       socket.off('connect', handleConnect);
       socket.off('disconnect', handleDisconnect);
+      socket.off('connect_error', handleConnectError);
       socket.off('world:state', handleWorldState);
       socket.off('user:join', handleUserJoin);
       socket.off('user:left', handleUserLeft);
@@ -328,8 +418,9 @@ export function useWebRTCAudio(
       socket.off('position:update', handlePositionUpdate);
       socket.off('user:update-profile', handleProfileUpdate);
       socket.off('webrtc:error', handleWebRTCError);
+      socket.off('server:error', handleServerError);
     };
-  }, [addLog]);
+  }, [addLog, joinEnabled, retryNonce]);
 
   // Sync local speaking and mute state to signaling server
   useEffect(() => {
@@ -396,16 +487,20 @@ export function useWebRTCAudio(
   }, []);
 
   const updateLocalPosition = useCallback((position: { x: number; y: number; z: number }) => {
+    initialPositionRef.current = position;
     if (isConnected) {
       socketService.updatePosition(position);
     }
   }, [isConnected]);
 
   const switchRoom = useCallback((roomId: string) => {
+    currentRoomIdRef.current = roomId;
     setCurrentRoomId(roomId);
-    socketService.switchRoom(roomId);
+    socketService.switchRoom(roomId, displayName, initialPositionRef.current);
+    Object.keys(peers).forEach((peerId) => webrtcManagerRef.current?.closePeer(peerId));
+    setPeers({});
     addLog('out', 'user:join', `Switched to room: '${roomId}'`);
-  }, [addLog]);
+  }, [addLog, peers, displayName]);
 
   const setAudioOutputDevice = useCallback(async (sinkId: string) => {
     if (webrtcManagerRef.current) {
@@ -416,6 +511,9 @@ export function useWebRTCAudio(
   return {
     localSocketId,
     isConnected,
+    isRegistered,
+    joinError,
+    retryJoin,
     signalingLatencyMs,
     currentRoomId,
     peers,

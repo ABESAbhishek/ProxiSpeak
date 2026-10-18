@@ -387,7 +387,7 @@ export class WebRTCManager {
               }
 
               if (report.codecId) {
-                const codecReport = statsReport.get(report.codecId);
+                const codecReport = Array.from(statsReport.values()).find((entry) => entry.id === report.codecId);
                 if (codecReport && codecReport.mimeType) {
                   codec = codecReport.mimeType.replace('audio/', '');
                 }

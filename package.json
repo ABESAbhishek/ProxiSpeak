@@ -13,6 +13,7 @@
     "type-check": "npm run build:server && npm run lint --prefix client",
     "test:spatial": "node server/test-spatial.mjs",
     "test:signaling": "node server/test-signaling.mjs",
+    "test:presence": "node server/test-presence.mjs",
     "test": "npm run test:spatial"
   },
   "devDependencies": {

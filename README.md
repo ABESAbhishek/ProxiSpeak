@@ -1,92 +1,83 @@
-# ProxiSpeak — Geospatial Proximity Audio Ecosystem
+# ProxiSpeak
 
-**Week 1 Deliverable: WebRTC Audio Foundation & Signaling Coordination**  
-*Role: Member 4 (WebRTC & Proximity Audio Integration) in coordination with Member 2 (Backend & Signaling Architecture)*
+ProxiSpeak is a shared virtual office with account-backed profiles, authenticated real-time avatar presence, and WebRTC audio signaling. Account data, sessions, one-time codes, and presence history are stored in MongoDB; the existing 3D office and WebRTC audio flows remain in place.
 
----
+## Prerequisites
 
-## 📌 Deliverable Summary
+- Node.js 20+ and npm
+- MongoDB 6+ (required for accounts and authenticated workspace sessions)
 
-This repository contains the Week 1 WebRTC audio foundation for **ProxiSpeak**, enabling real-time, low-latency voice communication across multiple browser sessions with signaling relay, connection telemetry, and proximity-ready spatial audio controls.
+## Install and configure
 
-### ✅ Completed Tasks
-
-1. **Microphone Permissions via `getUserMedia`**
-   - Implemented in [`client/src/hooks/useMicrophone.ts`](file:///c:/Users/lokes/OneDrive/Desktop/Infotact%20Project-1/ProxiSpeak/client/src/hooks/useMicrophone.ts) and [`client/src/components/AudioControls.tsx`](file:///c:/Users/lokes/OneDrive/Desktop/Infotact%20Project-1/ProxiSpeak/client/src/components/AudioControls.tsx).
-   - **Permissions API Query:** Real-time browser permission state tracking (`granted`, `prompt`, `denied`).
-   - **Input & Output Hardware Device Enumeration:** Detects and allows dynamic switching between both audio input microphones and audio output speakers/headphones (`audio.setSinkId()`).
-   - **Voice Activity Detection (VAD):** Real-time speaking detection based on frequency energy threshold with debounce smoothing and visual "Speaking" indicator.
-   - **Audio Processing Constraints Controls:** Interactive toggles for WebRTC Echo Cancellation, Noise Suppression, and Auto Gain Control (AGC).
-   - **Hardware Loopback Self-Test:** Built-in 3-second audio recorder and instant playback to test voice clarity before entering peer calls.
-   - **Web Audio API Spectrum Analyzer:** 8-band frequency visualizer (60Hz–16kHz) and input volume meter (0–100%).
-   - Strict explicit user activation and clean hardware track cleanup on teardown or device change.
-
-2. **WebRTC Audio Connection Between Two Browser Sessions**
-   - Implemented in [`client/src/services/webrtcManager.ts`](file:///c:/Users/lokes/OneDrive/Desktop/Infotact%20Project-1/ProxiSpeak/client/src/services/webrtcManager.ts), [`client/src/hooks/useWebRTCAudio.ts`](file:///c:/Users/lokes/OneDrive/Desktop/Infotact%20Project-1/ProxiSpeak/client/src/hooks/useWebRTCAudio.ts), and [`client/src/components/PeerList.tsx`](file:///c:/Users/lokes/OneDrive/Desktop/Infotact%20Project-1/ProxiSpeak/client/src/components/PeerList.tsx).
-   - **Peer Connection Management:** Multi-STUN server configuration (`stun.l.google.com:19302`) with early ICE candidate buffering.
-   - **Real-Time WebRTC Audio Telemetry:** Periodic `RTCPeerConnection.getStats()` monitoring displaying round-trip time (RTT), jitter (ms), audio bitrate (kbps), and Opus codec.
-   - **Automatic Playback & Recovery:** HTMLAudioElement autoplay handling with automatic ICE restart on connection failure.
-   - **Live Speaking & Mute Indicators:** Visual pulse rings and badges on peer cards when remote peers talk or mute their microphones.
-   - **Audio Output Routing:** Seamlessly switches remote peer audio playback to selected headphones/speakers via `setAudioOutputDevice`.
-
-3. **Signaling Coordination with Member 2**
-   - Agreed protocol implemented in [`server/src/signaling.ts`](file:///c:/Users/lokes/OneDrive/Desktop/Infotact%20Project-1/ProxiSpeak/server/src/signaling.ts), [`server/src/roomManager.ts`](file:///c:/Users/lokes/OneDrive/Desktop/Infotact%20Project-1/ProxiSpeak/server/src/roomManager.ts), [`shared/types.ts`](file:///c:/Users/lokes/OneDrive/Desktop/Infotact%20Project-1/ProxiSpeak/shared/types.ts), and [`client/src/components/SignalingLog.tsx`](file:///c:/Users/lokes/OneDrive/Desktop/Infotact%20Project-1/ProxiSpeak/client/src/components/SignalingLog.tsx).
-   - **Exact 3 WebRTC signaling events**:
-     - `webrtc:offer` &rarr; Relays SDP offer to target peer.
-     - `webrtc:answer` &rarr; Relays SDP answer to target peer.
-     - `webrtc:ice-candidate` &rarr; Relays ICE candidates.
-   - **Geospatial & Presence Coordination**:
-     - `position:update` &rarr; Bidirectional spatial coordinate relay across connected browser tabs.
-     - `user:update-profile` &rarr; Synchronizes mic mute and real-time speaking status.
-     - `webrtc:error` &rarr; Graceful handling when peers disconnect.
-     - **Multi-Room Audio Spaces:** Dynamic room switching (`global-space`, `audio-lab`, `spatial-room-1`, `quad-zone`).
-   - **Signaling Telemetry & Latency Ping:** Real-time `signaling:ping` / `signaling:pong` measurement showing round-trip latency to Member 2's relay server.
-   - **Live Event Audit:** Filterable event inspector and real-time counter chips for offers, answers, candidates, and spatial events.
-   - **Automated Verification Test:** Comprehensive test script in [`server/test-signaling.mjs`](file:///c:/Users/lokes/OneDrive/Desktop/Infotact%20Project-1/ProxiSpeak/server/test-signaling.mjs).
-
-4. **Preparation for Week 2 Proximity-Based Audio Integration**
-   - Implemented in [`client/src/services/spatialAudio.ts`](file:///c:/Users/lokes/OneDrive/Desktop/Infotact%20Project-1/ProxiSpeak/client/src/services/spatialAudio.ts) and [`client/src/components/ProximitySimulator.tsx`](file:///c:/Users/lokes/OneDrive/Desktop/Infotact%20Project-1/ProxiSpeak/client/src/components/ProximitySimulator.tsx).
-   - **Spatial Audio Engine (`SpatialAudioGraph`):** Connects remote audio streams to Web Audio API `GainNode` and `StereoPannerNode` with smooth exponential ramps to prevent clipping artifacts.
-   - **Multiple Falloff Curves:**
-     - *Linear Falloff:* $\text{Volume} = \max\left(0, 1 - \frac{d - d_{min}}{d_{max} - d_{min}}\right)$
-     - *Inverse Acoustic Law ($1/d$):* $\text{Volume} = \frac{d_{min}}{d_{min} + \text{rolloff} \cdot (d - d_{min})}$
-     - *Exponential Decay:* $\text{Volume} = e^{-\alpha \cdot d}$
-   - **Stereo Directional Panning:** Calculates azimuth angle and left/right ear pan based on listener heading orientation.
-   - **Live Bidirectional Synchronization:** Dragging avatars in Tab 1 updates spatial coordinates in Tab 2 in real-time, dynamically adjusting distance attenuation and stereo pan.
-   - **Automated Mathematical Test Suite:** Dedicated test suite in [`server/test-spatial.mjs`](file:///c:/Users/lokes/OneDrive/Desktop/Infotact%20Project-1/ProxiSpeak/server/test-spatial.mjs) verifying distance formulas, all 3 falloff curves, and directional panning.
-
----
-
-## 🚀 Quick Start
-
-### 1. Install Dependencies
 ```bash
 npm install
 npm run install:all
 ```
 
-### 2. Start Both Server and Client
+Copy `server/.env.example` to `server/.env` and `client/.env.example` to `client/.env.local`. The frontend uses `VITE_SOCKET_URL` (defaults to the current host on port 3001). Account login and socket entry require MongoDB; the old unauthenticated memory-only mode is no longer available for workspace access. Keep backend values out of the client env file.
+
+For MongoDB, run a local MongoDB service or create a database with MongoDB Atlas and put its connection URI in `server/.env`. Keep credentials in local environment files; do not commit them. A configured but unreachable MongoDB prevents the backend from starting. Set `SESSION_SECRET` and `OTP_SECRET` to independent random strings with at least 32 characters. Sessions use an HttpOnly, SameSite=Strict cookie, server-side session records, 30-minute idle expiry and a warning at 28 minutes by default. Override `SESSION_IDLE_TIMEOUT_MINUTES` and `SESSION_WARNING_MINUTES` to change the timing. Production must use HTTPS so the cookie receives the Secure flag.
+
+### Email and Google sign-in setup
+
+Email verification, email OTP sign-in, password recovery and email changes use Resend's email API. Add a Resend API key and a verified sender address as `RESEND_API_KEY` and `EMAIL_FROM`. Until these values are configured, email-based registration and sign-in clearly report that email delivery is unavailable. Codes are random six-digit values, stored as a keyed SHA-256 digest with five-minute expiration, one-time use, a 60-second resend cooldown, and five verification attempts.
+
+For Google sign-in, create a Google Cloud OAuth 2.0 Web application client. Set its authorized redirect URI to the exact `GOOGLE_CALLBACK_URL` (for local development, `http://localhost:3001/api/auth/google/callback`) and its authorized JavaScript origin to the exact `CLIENT_ORIGIN`. Put the client ID and secret only in `server/.env`. Configure `APP_BASE_URL` to the client origin. The server exchanges the authorization code and reads Google's verified OpenID Connect user profile; it does not accept a profile from the browser. OAuth state is single-use, short-lived, and browser-bound by a SameSite cookie.
+
+Passwords use Node's built-in scrypt KDF with per-account random salts and fixed memory-hard parameters; session tokens are random, stored only as HMAC digests, and never put in browser storage. Session revocation disconnects that session's sockets; periodic server sweeps and per-event checks reject expired sessions. Account profile routes, team, world, and room APIs and signaling sockets require an authenticated session. `AUTHORIZED_ROOM_IDS` controls the server allowlist (defaults to `global-space`); room membership and peer signaling are checked server-side. Email changes take effect only after verifying the new address. Profile updates cannot change account verification or provider fields.
+
+## Run
+
 ```bash
 npm run dev
 ```
-- **Client UI:** [http://localhost:5173](http://localhost:5173)
-- **Signaling Server:** [http://localhost:3001](http://localhost:3001)
 
-### 3. Run Automated Tests
-```bash
-# Run spatial audio mathematical verification
-npm run test:spatial
+- Frontend: <http://localhost:5173>
+- Backend health: <http://localhost:3001/health>
+- Current world API: <http://localhost:3001/api/world>
+- Room summary API: <http://localhost:3001/api/rooms>
 
-# Run two-peer WebRTC signaling integration test
-npm run test:signaling
+Open the frontend in two browser sessions. Both connect to `global-space`; movement in either office should move the corresponding peer in the other session. The connection badge shows whether the signaling server is connected. Use `npm run build` for production builds.
+
+## Socket.IO presence events
+
+The existing contract uses `username`, 3D `position` objects and room IDs to remain compatible with WebRTC and audio code. Client movement payloads omit identity; the server derives the sender from the socket.
+
+```ts
+// Client -> server
+socket.emit('user:join', {
+  username: 'Alice',
+  position: { x: 500, y: 280, z: 0 },
+  roomId: 'global-space', // optional
+});
+socket.emit('position:update', { position: { x: 510, y: 280, z: 0 } });
+
+// Server -> client
+socket.on('world:state', ({ roomId, users }) => { /* full room snapshot */ });
+socket.on('user:join', (user) => { /* new peer */ });
+socket.on('position:update', ({ userId, position, roomId }) => { /* peer moved */ });
+socket.on('user:left', ({ userId, roomId }) => { /* peer disconnected */ });
+socket.on('server:error', ({ message }) => { /* rejected payload */ });
 ```
 
-### 4. How to Test Two-Peer WebRTC Audio
-1. Open [http://localhost:5173](http://localhost:5173) in Browser Tab 1.
-2. Click **Start Microphone** (or click **Run Self-Test** to verify microphone recording locally).
-3. Open [http://localhost:5173](http://localhost:5173) in an Incognito window or second browser (Browser Tab 2).
-4. Click **Start Microphone** in Tab 2.
-5. In either tab, find the peer in the **Active Room Peers** list and click **Call Peer**.
-6. Observe the bidirectional exchange in the **Member 2 Signaling Inspector** (`webrtc:offer` &rarr; `webrtc:answer` &rarr; `webrtc:ice-candidate`).
-7. Speak into the microphone to verify bidirectional low-latency audio, real-time speaking pulse indicators, and live WebRTC stats (RTT, Jitter, Bitrate).
-8. Use the **Week 2 Proximity Audio Engine Demo** soundstage: drag your avatar or rotate your listener heading to test real-time distance falloff curves and stereo panning across both tabs.
+The planar office bounds are `x: 0–1000`, `y: 0–560`, and `z: -50–50`. Movement is capped at 30 events per second per socket. `world:state` includes the joining user; remote-avatar consumers filter their own server socket ID. Existing `user:update-profile`, room sync, ping/pong, and WebRTC events remain available.
+
+## Team members page
+
+Choose **Team members** in the sidebar to see connected members, recent sessions, room, microphone status, last seen time, and a brief activity summary. Multiple sessions for one account are grouped as one member. The summary only reflects ProxiSpeak events such as joining, moving, and microphone use; it does not infer work outside the app. Members can update their profile name from this page. `GET /api/team` returns active and previous members; previous session records persist across restarts with MongoDB.
+
+## MongoDB and geospatial preparation
+
+The optional Mongoose model stores socket-session ID, display name, office ID, original pixel `x/y`, GeoJSON location, and last-seen time. Presence is upserted at join/profile/disconnect and at most once per ten seconds during movement. MongoDB's 2dsphere index uses `[longitude, latitude]` order. Pixel coordinates are mapped linearly into valid longitude/latitude ranges solely to prepare the index; the values are not geographic coordinates and must not be used as a substitute for pixel-distance proximity. Use preserved `x/y` for future planar distance calculations.
+
+## Checks and troubleshooting
+
+```bash
+npm run build
+npm run test:spatial
+npm run test:signaling
+npm run dev:server # in one terminal
+npm run test:presence # in another terminal
+```
+
+`test:presence` checks health, two clients joining, the joining snapshot, position delivery and identity, malformed coordinates, and disconnect notification against the running server. If clients cannot connect, verify the server is listening on port 3001 and `CLIENT_ORIGIN` matches the exact frontend origin. If MongoDB is configured, verify the URI and network access; `/health` reports whether persistence is configured, and the backend startup log confirms a successful database connection and index setup.
