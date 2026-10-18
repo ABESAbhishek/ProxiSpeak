@@ -2,10 +2,9 @@ import { useRef, useEffect, useState } from "react";
 import type {
   AvatarPosition,
   JoinPayload,
-  PositionUpdatePayload,
 } from "../types/office";
 import { useRemoteAvatars } from "../hooks/useRemoteAvatars";
-import { socket } from "../socket";
+import { socket, socketService } from "../services/socket";
 
 const CANVAS_WIDTH = 800;
 const CANVAS_HEIGHT = 600;
@@ -448,6 +447,7 @@ export const VirtualOffice = ({
     clearRemoteAvatars,
   } = useRemoteAvatars(currentUserId);
 
+
   // Connect to the Socket.IO server and manage remote users.
   useEffect(() => {
     if (!socket) {
@@ -457,28 +457,47 @@ export const VirtualOffice = ({
       return;
     }
 
-    // Use the checked socket instance inside callbacks and cleanup.
     const activeSocket = socket;
 
     const handleConnect = () => {
       const currentPosition = myPosRef.current;
 
       const joinPayload: JoinPayload = {
-        displayName: currentUserId,
-        x: currentPosition.x,
-        y: currentPosition.y,
+        displayName: currentPosition.displayName,
+        position: {
+          x: currentPosition.x,
+          y: currentPosition.y,
+          z: 0,
+        },
+        roomId: "global-space",
       };
 
       activeSocket.emit("user:join", joinPayload);
     };
 
-    const handleWorldState = (avatars: AvatarPosition[]) => {
+    const handleWorldState = (payload: {
+      roomId: string;
+      users: Record<
+        string,
+        {
+          id: string;
+          username: string;
+          position: { x: number; y: number; z: number };
+        }
+      >;
+    }) => {
+      const avatars: AvatarPosition[] = Object.values(
+        payload.users ?? {},
+      ).map((user) => ({
+        userId: user.id,
+        displayName: user.username,
+        x: user.position.x,
+        y: user.position.y,
+      }));
       const localUserId = activeSocket.id;
 
       setRemoteAvatarList(
-        localUserId
-          ? avatars.filter((avatar) => avatar.userId !== localUserId)
-          : avatars,
+        avatars.filter((avatar) => avatar.userId !== localUserId),
       );
 
       if (localUserId) {
@@ -503,7 +522,6 @@ export const VirtualOffice = ({
       activeSocket.off("connect", handleConnect);
       activeSocket.off("world:state", handleWorldState);
       activeSocket.off("user:left", handleUserLeft);
-      activeSocket.disconnect();
       clearRemoteAvatars();
     };
   }, [
@@ -512,6 +530,7 @@ export const VirtualOffice = ({
     removeRemoteAvatar,
     clearRemoteAvatars,
   ]);
+
 
   // Keep the local avatar inside the canvas.
   useEffect(() => {
@@ -586,18 +605,17 @@ export const VirtualOffice = ({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  // Send position changes to the server.
+  // Send position changes using the server's expected payload.
   useEffect(() => {
-    if (!socket?.connected) {
+    if (!socket.connected) {
       return;
     }
 
-    const positionPayload: PositionUpdatePayload = {
+    socketService.updatePosition({
       x: myPos.x,
       y: myPos.y,
-    };
-
-    socket.emit("position:update", positionPayload);
+      z: 0,
+    });
   }, [myPos.x, myPos.y]);
 
   // Draw the office and all available avatars.
