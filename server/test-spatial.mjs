@@ -110,7 +110,42 @@ assert.strictEqual(left.azimuthDeg, -90);
 assert.strictEqual(Math.round(left.pan * 100) / 100, -1);
 console.log(`[PASS] Direction to the left: Azimuth = ${left.azimuthDeg}deg, Pan = ${left.pan} (Full Left)`);
 
+// 4. Acoustic Distance Low-Pass Frequency Cutoff
+function calculateAcousticCutoffFrequency(distance, maxDistance = 260) {
+  if (distance <= 30) return 20000;
+  if (distance >= maxDistance) return 2000;
+  const normalized = (distance - 30) / (maxDistance - 30);
+  return Math.round(20000 - normalized * (20000 - 2500));
+}
+
+assert.strictEqual(calculateAcousticCutoffFrequency(20), 20000, 'Close sound must have full 20kHz bandwidth');
+console.log('[PASS] Acoustic cutoff at close distance (20 <= 30) = 20000Hz (full clarity)');
+
+const farCutoff = calculateAcousticCutoffFrequency(260);
+assert.strictEqual(farCutoff, 2000, 'Distant sound beyond maxDistance must be muffled to 2000Hz');
+console.log(`[PASS] Acoustic cutoff at maxDistance (260) = ${farCutoff}Hz (natural acoustic absorption)`);
+
+// 5. Partition Occlusion & Wall Damping
+function calculateOcclusionDamping(isDifferentRoom, wallCount = 1) {
+  if (!isDifferentRoom) return { volumeMultiplier: 1.0, lowpassCutoffHz: 20000 };
+  const safeWalls = Math.max(1, wallCount);
+  const volumeMultiplier = Math.max(0.08, Math.round(Math.pow(0.42, safeWalls) * 100) / 100);
+  const lowpassCutoffHz = Math.max(600, Math.round(2400 / safeWalls));
+  return { volumeMultiplier, lowpassCutoffHz };
+}
+
+const sameRoom = calculateOcclusionDamping(false);
+assert.strictEqual(sameRoom.volumeMultiplier, 1.0);
+assert.strictEqual(sameRoom.lowpassCutoffHz, 20000);
+console.log('[PASS] Same room occlusion damping = 1.0x volume, 20000Hz cutoff');
+
+const wallDamped = calculateOcclusionDamping(true, 1);
+assert.strictEqual(wallDamped.volumeMultiplier, 0.42);
+assert.strictEqual(wallDamped.lowpassCutoffHz, 2400);
+console.log(`[PASS] 1-wall partition occlusion = ${wallDamped.volumeMultiplier}x volume, ${wallDamped.lowpassCutoffHz}Hz lowpass`);
+
 console.log('\n======================================================');
 console.log('  ALL SPATIAL AUDIO MATHEMATICAL TESTS PASSED!        ');
 console.log('======================================================\n');
 process.exit(0);
+

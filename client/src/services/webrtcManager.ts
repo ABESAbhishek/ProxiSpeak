@@ -331,9 +331,9 @@ export class WebRTCManager {
    * Updates spatial audio parameters: volume attenuation and stereo panning.
    * Leverages Web Audio API GainNode and StereoPannerNode with smooth ramps.
    */
-  public setPeerSpatial(peerId: string, volume: number, pan: number = 0): void {
+  public setPeerSpatial(peerId: string, volume: number, pan: number = 0, cutoffHz?: number): void {
     this.setPeerVolume(peerId, volume);
-    this.spatialAudio.updateSpatialParameters(peerId, volume, pan);
+    this.spatialAudio.updateSpatialParameters(peerId, volume, pan, cutoffHz);
   }
 
   /**

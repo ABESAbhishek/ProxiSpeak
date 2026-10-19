@@ -286,7 +286,7 @@ export const App: React.FC = () => {
       const previous = appliedSpatial.current[peer.peerId];
       if (!previous || Math.abs(previous.volume - volume) > 0.01 || Math.abs(previous.pan - spatial.pan) > 0.01) {
         appliedSpatial.current[peer.peerId] = { volume, pan: spatial.pan };
-        setPeerSpatial(peer.peerId, volume, spatial.pan);
+        setPeerSpatial(peer.peerId, volume, spatial.pan, spatial.cutoffFrequencyHz);
       }
     });
 
