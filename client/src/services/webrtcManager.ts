@@ -387,7 +387,13 @@ export class WebRTCManager {
               }
 
               if (report.codecId) {
-                const codecReport = Array.from(statsReport.values()).find((entry) => entry.id === report.codecId);
+                let codecReport: { id?: string; mimeType?: string } | undefined;
+                statsReport.forEach((entry: unknown) => {
+                  const item = entry as { id?: string; mimeType?: string };
+                  if (item?.id === report.codecId) {
+                    codecReport = item;
+                  }
+                });
                 if (codecReport && codecReport.mimeType) {
                   codec = codecReport.mimeType.replace('audio/', '');
                 }
