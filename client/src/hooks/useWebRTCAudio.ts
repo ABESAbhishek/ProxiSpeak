@@ -480,7 +480,8 @@ export function useWebRTCAudio(
         [peerId]: {
           ...existing,
           volume: Math.max(0, Math.min(1, volume)),
-          pan: Math.max(-1, Math.min(1, pan))
+          pan: Math.max(-1, Math.min(1, pan)),
+          cutoffFrequencyHz: typeof cutoffHz === 'number' ? cutoffHz : existing.cutoffFrequencyHz
         }
       };
     });

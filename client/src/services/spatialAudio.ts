@@ -175,6 +175,45 @@ export function computeSpatialAudio(
   };
 }
 
+export interface OcclusionOptions {
+  config?: SpatialAudioConfig;
+  preset?: keyof typeof SPATIAL_PRESETS;
+  isDifferentRoom?: boolean;
+  wallCount?: number;
+}
+
+/**
+ * Advanced spatial evaluation function combining 3D distance, acoustic zone preset,
+ * directional stereo panning, atmospheric lowpass absorption, and partition wall occlusion damping.
+ */
+export function evaluateOccludedSpatialAudio(
+  listenerPos: Position3D,
+  listenerHeadingRad: number,
+  sourcePos: Position3D,
+  options: OcclusionOptions = {}
+): SpatialAudioResult {
+  const config = options.config || (options.preset ? SPATIAL_PRESETS[options.preset] : DEFAULT_SPATIAL_CONFIG);
+  const base = computeSpatialAudio(listenerPos, listenerHeadingRad, sourcePos, config);
+
+  if (!options.isDifferentRoom) {
+    return base;
+  }
+
+  const { volumeMultiplier, lowpassCutoffHz: wallCutoffHz } = calculateOcclusionDamping(
+    true,
+    options.wallCount ?? 1
+  );
+
+  const dampedVolume = Math.max(0, Math.min(1, Math.round(base.volume * volumeMultiplier * 100) / 100));
+  const dampedCutoff = Math.max(400, Math.min(base.cutoffFrequencyHz, wallCutoffHz));
+
+  return {
+    ...base,
+    volume: dampedVolume,
+    cutoffFrequencyHz: dampedCutoff
+  };
+}
+
 /**
  * Web Audio API Spatial Audio Controller
  * Manages BiquadFilterNode (acoustic distance/occlusion), GainNode (volume)

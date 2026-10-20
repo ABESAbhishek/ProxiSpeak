@@ -144,6 +144,76 @@ assert.strictEqual(wallDamped.volumeMultiplier, 0.42);
 assert.strictEqual(wallDamped.lowpassCutoffHz, 2400);
 console.log(`[PASS] 1-wall partition occlusion = ${wallDamped.volumeMultiplier}x volume, ${wallDamped.lowpassCutoffHz}Hz lowpass`);
 
+// 6. Architectural Acoustic Zone Presets
+const SPATIAL_PRESETS = {
+  whisper: { minDistance: 15, maxDistance: 90, rolloffFactor: 1.5, model: 'exponential' },
+  normal: { minDistance: 30, maxDistance: 260, rolloffFactor: 1.0, model: 'linear' },
+  meeting: { minDistance: 50, maxDistance: 350, rolloffFactor: 0.8, model: 'inverse' },
+  auditorium: { minDistance: 100, maxDistance: 800, rolloffFactor: 0.5, model: 'linear' }
+};
+
+const whisperFar = calculateAttenuation(100, SPATIAL_PRESETS.whisper);
+assert.strictEqual(whisperFar, 0.0, 'Whisper voice must be inaudible beyond 90 units');
+console.log('[PASS] Whisper acoustic preset: inaudible at distance 100 (> 90 maxDistance)');
+
+const auditoriumMid = calculateAttenuation(450, SPATIAL_PRESETS.auditorium);
+assert(auditoriumMid > 0.45 && auditoriumMid < 0.55, 'Auditorium preset must preserve voice carrying power at distance 450');
+console.log(`[PASS] Auditorium acoustic preset: carry factor at 450 units = ${Math.round(auditoriumMid * 100)}%`);
+
+// 7. Full Unified Occluded Spatial Audio Pipeline
+function computeSpatialAudio(listenerPos, listenerHeadingRad, sourcePos, config = SPATIAL_PRESETS.normal) {
+  const distance = calculate3DDistance(listenerPos, sourcePos);
+  const volume = calculateAttenuation(distance, config);
+  const { pan, azimuthDeg } = calculateStereoPanAndAzimuth(listenerPos, listenerHeadingRad, sourcePos);
+  const cutoffFrequencyHz = calculateAcousticCutoffFrequency(distance, config.maxDistance);
+
+  return {
+    distance: Math.round(distance * 10) / 10,
+    volume: Math.round(volume * 100) / 100,
+    pan: Math.round(pan * 100) / 100,
+    azimuthDeg,
+    cutoffFrequencyHz
+  };
+}
+
+function evaluateOccludedSpatialAudio(listenerPos, listenerHeadingRad, sourcePos, options = {}) {
+  const config = options.config || (options.preset ? SPATIAL_PRESETS[options.preset] : SPATIAL_PRESETS.normal);
+  const base = computeSpatialAudio(listenerPos, listenerHeadingRad, sourcePos, config);
+
+  if (!options.isDifferentRoom) return base;
+
+  const { volumeMultiplier, lowpassCutoffHz: wallCutoffHz } = calculateOcclusionDamping(
+    true,
+    options.wallCount ?? 1
+  );
+
+  return {
+    ...base,
+    volume: Math.max(0, Math.min(1, Math.round(base.volume * volumeMultiplier * 100) / 100)),
+    cutoffFrequencyHz: Math.max(400, Math.min(base.cutoffFrequencyHz, wallCutoffHz))
+  };
+}
+
+const openOfficePeer = evaluateOccludedSpatialAudio(
+  { x: 100, y: 100, z: 0 },
+  0,
+  { x: 100, y: 140, z: 0 },
+  { preset: 'normal', isDifferentRoom: false }
+);
+assert.strictEqual(openOfficePeer.cutoffFrequencyHz, 19239);
+assert(openOfficePeer.volume > 0.9, 'Close open office peer has near-full volume');
+console.log(`[PASS] Unified spatial evaluation (Open Office): Volume = ${openOfficePeer.volume}, Cutoff = ${openOfficePeer.cutoffFrequencyHz}Hz`);
+
+const occludedPeer = evaluateOccludedSpatialAudio(
+  { x: 100, y: 100, z: 0 },
+  0,
+  { x: 100, y: 140, z: 0 },
+  { preset: 'normal', isDifferentRoom: true, wallCount: 1 }
+);
+assert.strictEqual(occludedPeer.cutoffFrequencyHz, 2400, 'Occluded peer must be clamped to 2400Hz lowpass wall cutoff');
+assert.strictEqual(Math.round(occludedPeer.volume * 100) / 100, Math.round(openOfficePeer.volume * 0.42 * 100) / 100);
+console.log(`[PASS] Unified spatial evaluation (Behind Wall): Volume = ${occludedPeer.volume} (damped by 0.42x), Cutoff = ${occludedPeer.cutoffFrequencyHz}Hz (lowpass clamped)`);
+
 console.log('\n======================================================');
 console.log('  ALL SPATIAL AUDIO MATHEMATICAL TESTS PASSED!        ');
 console.log('======================================================\n');

@@ -59,7 +59,7 @@ export const App: React.FC = () => {
   const locationOrigin = useRef<{ latitude: number; longitude: number } | null>(null);
   const [localPosition, setLocalPosition] = useState<Position3D>({ x: 500, y: 269, z: 0 });
   const manualPeerVolumes = useRef<Record<string, number>>({});
-  const appliedSpatial = useRef<Record<string, { volume: number; pan: number }>>({});
+  const appliedSpatial = useRef<Record<string, { volume: number; pan: number; cutoffHz: number }>>({});
 
   const {
     stream: localStream,
@@ -284,8 +284,13 @@ export const App: React.FC = () => {
       const spatial = computeSpatialAudio(localPosition, 0, peer.position);
       const volume = spatial.volume * manualPeerVolumes.current[peer.peerId];
       const previous = appliedSpatial.current[peer.peerId];
-      if (!previous || Math.abs(previous.volume - volume) > 0.01 || Math.abs(previous.pan - spatial.pan) > 0.01) {
-        appliedSpatial.current[peer.peerId] = { volume, pan: spatial.pan };
+      if (
+        !previous ||
+        Math.abs(previous.volume - volume) > 0.01 ||
+        Math.abs(previous.pan - spatial.pan) > 0.01 ||
+        Math.abs(previous.cutoffHz - spatial.cutoffFrequencyHz) > 50
+      ) {
+        appliedSpatial.current[peer.peerId] = { volume, pan: spatial.pan, cutoffHz: spatial.cutoffFrequencyHz };
         setPeerSpatial(peer.peerId, volume, spatial.pan, spatial.cutoffFrequencyHz);
       }
     });
