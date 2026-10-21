@@ -70,6 +70,19 @@ Choose **Team members** in the sidebar to see connected members, recent sessions
 
 The optional Mongoose model stores socket-session ID, display name, office ID, original pixel `x/y`, GeoJSON location, and last-seen time. Presence is upserted at join/profile/disconnect and at most once per ten seconds during movement. MongoDB's 2dsphere index uses `[longitude, latitude]` order. Pixel coordinates are mapped linearly into valid longitude/latitude ranges solely to prepare the index; the values are not geographic coordinates and must not be used as a substitute for pixel-distance proximity. Use preserved `x/y` for future planar distance calculations.
 
+## Geospatial Proximity Audio & Office Acoustic Zones (Member 4)
+
+ProxiSpeak's spatial audio engine pairs Web Audio API DSP nodes (`GainNode`, `StereoPannerNode`, and `BiquadFilterNode`) with real-time avatar movement:
+- **Acoustic Zone Detection**: Automatically detects office zones based on 3D avatar position:
+  - **Conference Room (`meeting`)**: Inverse-distance falloff with extended clarity (`minDistance: 50`, `maxDistance: 350`, `rolloff: 0.8`).
+  - **Quiet Focus Pod (`whisper`)**: Exponential sound attenuation (`minDistance: 15`, `maxDistance: 90`, `rolloff: 1.5`) protecting deep focus.
+  - **Creative Studio (`whisper`)**: Rapid sound damping inside acoustically treated production zones.
+  - **All-Hands Auditorium (`auditorium`)**: Long-range linear projection (`maxDistance: 800`, `rolloff: 0.5`) carrying speech to large gatherings.
+  - **Open Workspace (`normal`)**: Standard balanced linear falloff (`minDistance: 30`, `maxDistance: 260`).
+- **Orientation-Aware Stereo Panning**: Derives relative sound azimuth from 3D avatar facing direction (`headingRad`), adjusting the StereoPannerNode smoothly (-1.0 to 1.0) as avatars turn in 3D space.
+- **Cross-Zone Partition Occlusion**: Applies physical partition wall damping (0.42x volume multiplier and 2400 Hz low-pass filter) when communicating between private zones and the open floor.
+- **Proximity Audio Simulator**: Embedded under **Audio settings & diagnostics** for real-time visualization of falloff curves, partition walls, and stereo azimuth.
+
 ## Checks and troubleshooting
 
 ```bash

@@ -15,7 +15,8 @@ import { AuthPage } from './components/AuthPage';
 import { AccountPage } from './components/AccountPage';
 import { authRequest } from './services/authApi';
 import type { AccountProfile } from './services/authApi';
-import { computeSpatialAudio } from './services/spatialAudio';
+import { evaluateOccludedSpatialAudio, detectAcousticZone, areZonesOccluded } from './services/spatialAudio';
+import { ProximitySimulator } from './components/ProximitySimulator';
 import { deriveActiveDiscussions } from './services/workspacePresence';
 import type { ActiveDiscussion, WorkspaceMember } from './services/workspacePresence';
 import { socketService } from './services/socket';
@@ -58,8 +59,11 @@ export const App: React.FC = () => {
   const location = useDeviceLocation();
   const locationOrigin = useRef<{ latitude: number; longitude: number } | null>(null);
   const [localPosition, setLocalPosition] = useState<Position3D>({ x: 500, y: 269, z: 0 });
+  const [localHeadingRad, setLocalHeadingRad] = useState<number>(0);
   const manualPeerVolumes = useRef<Record<string, number>>({});
   const appliedSpatial = useRef<Record<string, { volume: number; pan: number; cutoffHz: number }>>({});
+
+  const currentAcousticZone = useMemo(() => detectAcousticZone(localPosition), [localPosition]);
 
   const {
     stream: localStream,
@@ -279,9 +283,22 @@ export const App: React.FC = () => {
       activeIds.add(peer.peerId);
       manualPeerVolumes.current[peer.peerId] ??= peer.volume;
 
-      // Use the project's established distance/falloff/pan rules and the
-      // existing Web Audio graph exposed by useWebRTCAudio.
-      const spatial = computeSpatialAudio(localPosition, 0, peer.position);
+      const peerZone = detectAcousticZone(peer.position);
+      const isOccluded = areZonesOccluded(currentAcousticZone, peerZone);
+
+      // Use the project's established distance/falloff/pan rules, active zone acoustic preset,
+      // real-time listener heading orientation, and partition occlusion damping.
+      const spatial = evaluateOccludedSpatialAudio(
+        localPosition,
+        localHeadingRad,
+        peer.position,
+        {
+          preset: currentAcousticZone.preset,
+          isDifferentRoom: isOccluded,
+          wallCount: 1
+        }
+      );
+
       const volume = spatial.volume * manualPeerVolumes.current[peer.peerId];
       const previous = appliedSpatial.current[peer.peerId];
       if (
@@ -298,7 +315,7 @@ export const App: React.FC = () => {
     Object.keys(appliedSpatial.current).forEach((peerId) => {
       if (!activeIds.has(peerId)) delete appliedSpatial.current[peerId];
     });
-  }, [localPosition, peerList, setPeerSpatial]);
+  }, [currentAcousticZone, localHeadingRad, localPosition, peerList, setPeerSpatial]);
 
   const toggleLocationSharing = () => {
     locationOrigin.current = null;
@@ -541,11 +558,22 @@ export const App: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.03] px-3 py-1.5">
-                    <span className={`h-1.5 w-1.5 rounded-full ${isConnected ? 'bg-emerald-400' : 'bg-amber-400'}`} />
-                    <span className="text-[11px] font-medium text-slate-300">
-                      {isConnected ? 'Live room' : 'Preview room'}
-                    </span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div
+                      className="flex items-center gap-1.5 rounded-full border border-cyan-500/25 bg-cyan-950/40 px-3 py-1 text-[11px] font-medium text-cyan-300"
+                      title={`${currentAcousticZone.name}: ${currentAcousticZone.description} (Falloff: ${currentAcousticZone.preset})`}
+                    >
+                      <span>{currentAcousticZone.icon}</span>
+                      <span className="font-semibold">{currentAcousticZone.name}</span>
+                      <span className="text-[10px] text-cyan-400/80 font-mono">({currentAcousticZone.preset})</span>
+                    </div>
+
+                    <div className="flex items-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.03] px-3 py-1.5">
+                      <span className={`h-1.5 w-1.5 rounded-full ${isConnected ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+                      <span className="text-[11px] font-medium text-slate-300">
+                        {isConnected ? 'Live room' : 'Preview room'}
+                      </span>
+                    </div>
                   </div>
                 </div>
 
@@ -556,6 +584,7 @@ export const App: React.FC = () => {
                         displayName={displayName}
                         avatarUrl={account.avatarUrl}
                         onMove={reportLocalPosition}
+                        onHeadingChange={setLocalHeadingRad}
                         peers={peerList}
                         isLocationTracking={location.enabled}
                         theme={theme}
@@ -826,6 +855,15 @@ export const App: React.FC = () => {
                       onCloseCall={closeCall}
                       onSetVolume={setManualPeerVolume}
                       onSwitchRoom={switchRoom}
+                    />
+                  </div>
+
+                  <div className="border-t border-white/[0.06] pt-6">
+                    <ProximitySimulator
+                      peers={peers}
+                      localIsSpeaking={isSpeaking && micIsActive && !isMuted}
+                      onSetSpatial={setPeerSpatial}
+                      onLocalMove={reportLocalPosition}
                     />
                   </div>
 

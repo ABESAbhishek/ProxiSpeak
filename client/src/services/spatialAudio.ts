@@ -33,6 +33,99 @@ export const SPATIAL_PRESETS: Record<'whisper' | 'normal' | 'meeting' | 'auditor
   auditorium: { minDistance: 100, maxDistance: 800, rolloffFactor: 0.5, model: 'linear' }
 };
 
+export interface OfficeAcousticZone {
+  id: string;
+  name: string;
+  preset: keyof typeof SPATIAL_PRESETS;
+  icon: string;
+  description: string;
+  bounds?: { minX: number; maxX: number; minY: number; maxY: number };
+  center?: { x: number; y: number; radius: number };
+}
+
+/**
+ * Architectural Acoustic Zones mapped to 3D virtual office spatial layout
+ */
+export const OFFICE_ACOUSTIC_ZONES: OfficeAcousticZone[] = [
+  {
+    id: 'meeting-table',
+    name: 'Conference Room',
+    preset: 'meeting',
+    icon: '👥',
+    description: 'Inverse falloff with extended clarity for group deliberations.',
+    center: { x: 500, y: 200, radius: 95 }
+  },
+  {
+    id: 'focus-pod',
+    name: 'Quiet Focus Pod',
+    preset: 'whisper',
+    icon: '🎙️',
+    description: 'Exponential dropoff preserving confidentiality in deep focus.',
+    center: { x: 844, y: 466, radius: 90 }
+  },
+  {
+    id: 'recording-studio',
+    name: 'Creative Studio',
+    preset: 'whisper',
+    icon: '🎧',
+    description: 'Acoustically treated studio zone with rapid sound damping.',
+    center: { x: 156, y: 466, radius: 90 }
+  },
+  {
+    id: 'all-hands',
+    name: 'All-Hands Auditorium',
+    preset: 'auditorium',
+    icon: '📢',
+    description: 'Long-range linear projection carrying speech across the hall.',
+    bounds: { minX: 360, maxX: 640, minY: 320, maxY: 480 }
+  },
+  {
+    id: 'open-workspace',
+    name: 'Open Workspace',
+    preset: 'normal',
+    icon: '🏢',
+    description: 'Natural distance falloff balanced for daily team collaboration.'
+  }
+];
+
+/**
+ * Detects the acoustic zone based on 3D spatial coordinates
+ */
+export function detectAcousticZone(position: Position3D): OfficeAcousticZone {
+  const x = position.x;
+  const y = position.y;
+
+  for (const zone of OFFICE_ACOUSTIC_ZONES) {
+    if (zone.center) {
+      const dx = x - zone.center.x;
+      const dy = y - zone.center.y;
+      if (Math.hypot(dx, dy) <= zone.center.radius) {
+        return zone;
+      }
+    } else if (zone.bounds) {
+      if (
+        x >= zone.bounds.minX &&
+        x <= zone.bounds.maxX &&
+        y >= zone.bounds.minY &&
+        y <= zone.bounds.maxY
+      ) {
+        return zone;
+      }
+    }
+  }
+
+  return OFFICE_ACOUSTIC_ZONES[OFFICE_ACOUSTIC_ZONES.length - 1];
+}
+
+/**
+ * Checks whether two zones require partition wall acoustic occlusion
+ */
+export function areZonesOccluded(zoneA: OfficeAcousticZone, zoneB: OfficeAcousticZone): boolean {
+  if (zoneA.id === zoneB.id) return false;
+  const privateZones = new Set(['meeting-table', 'focus-pod', 'recording-studio']);
+  return privateZones.has(zoneA.id) || privateZones.has(zoneB.id);
+}
+
 export interface SpatialAudioResult {
   distance: number;
   volume: number;            // Normalized volume 0.0 to 1.0
