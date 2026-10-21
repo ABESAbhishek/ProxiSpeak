@@ -331,9 +331,9 @@ export class WebRTCManager {
    * Updates spatial audio parameters: volume attenuation and stereo panning.
    * Leverages Web Audio API GainNode and StereoPannerNode with smooth ramps.
    */
-  public setPeerSpatial(peerId: string, volume: number, pan: number = 0): void {
+  public setPeerSpatial(peerId: string, volume: number, pan: number = 0, cutoffHz?: number): void {
     this.setPeerVolume(peerId, volume);
-    this.spatialAudio.updateSpatialParameters(peerId, volume, pan);
+    this.spatialAudio.updateSpatialParameters(peerId, volume, pan, cutoffHz);
   }
 
   /**
@@ -387,7 +387,13 @@ export class WebRTCManager {
               }
 
               if (report.codecId) {
-                const codecReport = Array.from(statsReport.values()).find((entry) => entry.id === report.codecId);
+                let codecReport: { id?: string; mimeType?: string } | undefined;
+                statsReport.forEach((entry: unknown) => {
+                  const item = entry as { id?: string; mimeType?: string };
+                  if (item?.id === report.codecId) {
+                    codecReport = item;
+                  }
+                });
                 if (codecReport && codecReport.mimeType) {
                   codec = codecReport.mimeType.replace('audio/', '');
                 }

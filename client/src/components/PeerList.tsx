@@ -191,7 +191,24 @@ export const PeerList: React.FC<PeerListProps> = ({
                     </span>
                   </div>
 
-                  <div className="flex items-center gap-2.5 ml-auto">
+                  <div className="flex items-center gap-2.5 ml-auto flex-wrap">
+                    {typeof peer.pan === 'number' && Math.abs(peer.pan) > 0.05 && (
+                      <span className="text-[10px] text-cyan-400 font-mono bg-cyan-500/10 px-1.5 py-0.5 rounded border border-cyan-500/20">
+                        {peer.pan > 0 ? `Pan R ${Math.round(peer.pan * 100)}%` : `Pan L ${Math.round(Math.abs(peer.pan) * 100)}%`}
+                      </span>
+                    )}
+                    {typeof peer.cutoffFrequencyHz === 'number' && (
+                      <span
+                        className={`text-[10px] font-mono px-1.5 py-0.5 rounded border ${
+                          peer.cutoffFrequencyHz < 3000
+                            ? 'text-amber-300 bg-amber-500/15 border-amber-500/30'
+                            : 'text-indigo-300 bg-indigo-500/10 border-indigo-500/20'
+                        }`}
+                        title="Web Audio API Lowpass Filter Cutoff"
+                      >
+                        {(peer.cutoffFrequencyHz / 1000).toFixed(1)} kHz
+                      </span>
+                    )}
                     <span className="text-[11px] text-slate-400 font-mono">
                       Volume: {Math.round((peer.volume ?? 1) * 100)}%
                     </span>
