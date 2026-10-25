@@ -52,7 +52,7 @@ export function useMicrophone(): UseMicrophoneResult {
     noiseSuppression: true,
     autoGainControl: true
   });
-  
+
   // Microphone Self-Test / Loopback test state
   const [isSelfTesting, setIsSelfTesting] = useState<boolean>(false);
   const [selfTestSecondsRemaining, setSelfTestSecondsRemaining] = useState<number>(0);
@@ -64,6 +64,7 @@ export function useMicrophone(): UseMicrophoneResult {
   const animationFrameRef = useRef<number | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const speakingTimeoutRef = useRef<number | null>(null);
+  const selfTestTimerRef = useRef<number | null>(null);
 
   // 1. Query browser permission status via Permissions API
   const checkPermissionState = useCallback(async () => {
@@ -188,7 +189,7 @@ export function useMicrophone(): UseMicrophoneResult {
       speakingTimeoutRef.current = null;
     }
     if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-      audioContextRef.current.close().catch(() => {});
+      audioContextRef.current.close().catch(() => { });
       audioContextRef.current = null;
     }
     analyserRef.current = null;
@@ -201,15 +202,49 @@ export function useMicrophone(): UseMicrophoneResult {
    * Release all media stream tracks cleanly
    */
   const releaseTracks = useCallback(() => {
-    stopLevelMeter();
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => {
-        track.stop();
-        console.log(`[Microphone] Released track: ${track.id} (${track.kind})`);
-      });
-      streamRef.current = null;
-    }
+    const currentStream = streamRef.current;
+
+    // Clear the reference first so ended handlers cannot clean up twice.
+    streamRef.current = null;
     setStream(null);
+
+    // Stop any running self-test timer.
+    if (selfTestTimerRef.current !== null) {
+      window.clearInterval(selfTestTimerRef.current);
+      selfTestTimerRef.current = null;
+    }
+
+    // Stop recording before releasing the microphone.
+    const recorder = mediaRecorderRef.current;
+    mediaRecorderRef.current = null;
+
+    if (recorder && recorder.state !== 'inactive') {
+      try {
+        recorder.stop();
+      } catch (error) {
+        console.warn('[Microphone] Could not stop recorder:', error);
+      }
+    }
+
+    // Stop monitoring and release the audio context.
+    stopLevelMeter();
+
+    // Detach handlers and release every track.
+    if (currentStream) {
+      currentStream.getTracks().forEach((track) => {
+        track.onended = null;
+
+        if (track.readyState !== 'ended') {
+          track.stop();
+        }
+      });
+    }
+
+    setIsSelfTesting(false);
+    setIsMuted(false);
+    setSelfTestSecondsRemaining(0);
+    setAudioLevel(0);
+    setIsSpeaking(false);
   }, [stopLevelMeter]);
 
   /**
@@ -284,12 +319,33 @@ export function useMicrophone(): UseMicrophoneResult {
       // Refresh devices with actual hardware labels granted
       refreshDevices();
 
-      // Handle track ending unexpectedly (e.g. unplugged)
-      mediaStream.getAudioTracks().forEach((track) => {
+      // Handle missing audio tracks.
+      const audioTracks = mediaStream.getAudioTracks();
+
+      if (
+        audioTracks.length === 0 ||
+        audioTracks.every((track) => track.readyState === 'ended')
+      ) {
+        releaseTracks();
+        setStatus('error');
+        setErrorMessage(
+          'No active microphone track is available. Please check your microphone and try again.'
+        );
+        return null;
+      }
+
+      // Handle microphone tracks ending unexpectedly.
+      audioTracks.forEach((track) => {
         track.onended = () => {
+          if (streamRef.current !== mediaStream) return;
+
           console.warn('[Microphone] Audio track ended unexpectedly.');
+
           releaseTracks();
-          setStatus('idle');
+          setStatus('error');
+          setErrorMessage(
+            'Your microphone stopped unexpectedly. Please check your device and restart the microphone.'
+          );
         };
       });
 
@@ -367,10 +423,7 @@ export function useMicrophone(): UseMicrophoneResult {
     try {
       setIsSelfTesting(true);
       setSelfTestSecondsRemaining(3);
-      if (testAudioUrl) {
-        URL.revokeObjectURL(testAudioUrl);
-        setTestAudioUrl(null);
-      }
+      setTestAudioUrl(null);
 
       const chunks: Blob[] = [];
       const recorder = new MediaRecorder(activeStream);
@@ -382,22 +435,56 @@ export function useMicrophone(): UseMicrophoneResult {
         }
       };
 
+
+      recorder.onerror = () => {
+        if (selfTestTimerRef.current !== null) {
+          window.clearInterval(selfTestTimerRef.current);
+          selfTestTimerRef.current = null;
+        }
+
+        mediaRecorderRef.current = null;
+        setIsSelfTesting(false);
+        setSelfTestSecondsRemaining(0);
+        setErrorMessage('Microphone self-test failed. Please try again.');
+      };
+
+
       recorder.onstop = () => {
+        mediaRecorderRef.current = null;
+
+        if (selfTestTimerRef.current !== null) {
+          window.clearInterval(selfTestTimerRef.current);
+          selfTestTimerRef.current = null;
+        }
+
+        if (streamRef.current !== activeStream || !activeStream.active) {
+          setIsSelfTesting(false);
+          setSelfTestSecondsRemaining(0);
+          return;
+        }
+
         const blob = new Blob(chunks, { type: 'audio/webm' });
         const url = URL.createObjectURL(blob);
+
         setTestAudioUrl(url);
         setIsSelfTesting(false);
         setSelfTestSecondsRemaining(0);
       };
 
+
       recorder.start();
 
       let seconds = 3;
-      const timer = setInterval(() => {
+      selfTestTimerRef.current = window.setInterval(() => {
         seconds -= 1;
         setSelfTestSecondsRemaining(seconds);
+
         if (seconds <= 0) {
-          clearInterval(timer);
+          if (selfTestTimerRef.current !== null) {
+            window.clearInterval(selfTestTimerRef.current);
+            selfTestTimerRef.current = null;
+          }
+
           if (recorder.state === 'recording') {
             recorder.stop();
           }
@@ -408,24 +495,27 @@ export function useMicrophone(): UseMicrophoneResult {
       setIsSelfTesting(false);
       setSelfTestSecondsRemaining(0);
     }
-  }, [isSelfTesting, startMicrophone, testAudioUrl]);
+  }, [isSelfTesting, startMicrophone]);
 
   const clearSelfTest = useCallback(() => {
-    if (testAudioUrl) {
-      URL.revokeObjectURL(testAudioUrl);
-      setTestAudioUrl(null);
-    }
-  }, [testAudioUrl]);
+    setTestAudioUrl(null);
+  }, []);
 
-  // Clean up all tracks on component unmount
+  // Clean up microphone tracks only when the component unmounts.
   useEffect(() => {
     return () => {
       releaseTracks();
+    };
+  }, [releaseTracks]);
+
+  // Revoke the previous audio URL when it changes or the component unmounts.
+  useEffect(() => {
+    return () => {
       if (testAudioUrl) {
         URL.revokeObjectURL(testAudioUrl);
       }
     };
-  }, [releaseTracks, testAudioUrl]);
+  }, [testAudioUrl]);
 
   return {
     stream,
