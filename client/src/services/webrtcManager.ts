@@ -39,7 +39,11 @@ export class WebRTCManager {
   private spatialAudio: SpatialAudioGraph = new SpatialAudioGraph();
   private statsInterval: number | null = null;
   private prevBytesReceived: Map<string, { bytes: number; timestamp: number }> = new Map();
-  private selectedSinkId: string = '';
+  private disconnectTimers: Map<string, number> = new Map();
+  private retryAttempts: Map<string, number> = new Map();
+
+  private readonly MAX_ICE_RETRIES = 2;
+  private readonly DISCONNECT_GRACE_PERIOD_MS = 5000;
 
   constructor(callbacks: WebRTCManagerCallbacks) {
     this.callbacks = callbacks;
@@ -118,27 +122,72 @@ export class WebRTCManager {
         this.remoteStreams.set(peerId, stream);
       }
       stream.addTrack(event.track);
-
-      // Attach to HTMLAudioElement with auto-play
-      this.attachAudioElement(peerId, stream);
       // Connect to Web Audio API spatial panner graph
       this.spatialAudio.attachStream(peerId, stream);
       this.callbacks.onRemoteStream(peerId, stream);
     };
 
     // Connection state monitoring
+
     pc.onconnectionstatechange = () => {
+      // Ignore events from a connection that has already been replaced or closed.
+      if (this.peerConnections.get(peerId) !== pc) return;
+
       const state = pc.connectionState as WebRTCConnectionState;
+
       console.log(`[WebRTC] Peer ${peerId} connection state: ${state}`);
       this.callbacks.onConnectionStateChange(peerId, state);
 
+      if (state === 'connected') {
+        const timer = this.disconnectTimers.get(peerId);
+
+        if (timer !== undefined) {
+          window.clearTimeout(timer);
+          this.disconnectTimers.delete(peerId);
+        }
+
+        this.retryAttempts.delete(peerId);
+        return;
+      }
+
+      if (state === 'disconnected') {
+        // Allow temporary network interruptions to recover.
+        if (!this.disconnectTimers.has(peerId)) {
+          const timer = window.setTimeout(() => {
+            this.disconnectTimers.delete(peerId);
+
+            if (
+              this.peerConnections.get(peerId) === pc &&
+              pc.connectionState === 'disconnected'
+            ) {
+              console.warn(
+                `[WebRTC] Peer ${peerId} remained disconnected. Cleaning up.`
+              );
+              this.closePeer(peerId);
+            }
+          }, this.DISCONNECT_GRACE_PERIOD_MS);
+
+          this.disconnectTimers.set(peerId, timer);
+        }
+
+        return;
+      }
+
       if (state === 'failed') {
-        console.warn(`[WebRTC] Connection failed with ${peerId}. Retrying ICE restart.`);
-        this.retryPeerConnection(peerId);
-      } else if (state === 'closed') {
+        console.warn(`[WebRTC] Connection failed with ${peerId}.`);
+
+        if (!this.retryAttempts.has(peerId)) {
+          void this.retryPeerConnection(peerId);
+        }
+
+        return;
+      }
+
+      if (state === 'closed') {
         this.closePeer(peerId);
       }
     };
+
 
     pc.oniceconnectionstatechange = () => {
       console.log(`[WebRTC] Peer ${peerId} ICE state: ${pc.iceConnectionState}`);
@@ -275,65 +324,54 @@ export class WebRTCManager {
     this.queuedCandidates.delete(peerId);
   }
 
-  /**
-   * Sets up HTMLAudioElement for remote peer audio playback.
-   */
-  private attachAudioElement(peerId: string, stream: MediaStream): void {
-    let audio = this.audioElements.get(peerId);
-    if (!audio) {
-      audio = new Audio();
-      audio.autoplay = true;
-      if (this.selectedSinkId && 'setSinkId' in audio && typeof (audio as unknown as { setSinkId: (id: string) => Promise<void> }).setSinkId === 'function') {
-        (audio as unknown as { setSinkId: (id: string) => Promise<void> }).setSinkId(this.selectedSinkId).catch((err) => {
-          console.warn('[WebRTC] Error setting sinkId on new audio element:', err);
-        });
-      }
-      this.audioElements.set(peerId, audio);
-    }
-
-    audio.srcObject = stream;
-    audio.play().catch((err) => {
-      console.warn(`[WebRTC] Autoplay prevented for peer ${peerId}. User interaction may be required:`, err);
-    });
-  }
 
   /**
    * Routes remote peer audio output to a specific audio output device (e.g. headphones).
    */
+  /**
+ * Audio output selection is not yet supported by the current
+ * SpatialAudioGraph playback path.
+ */
   public async setAudioOutputDevice(sinkId: string): Promise<void> {
-    this.selectedSinkId = sinkId;
-    for (const [peerId, audio] of this.audioElements.entries()) {
-      if ('setSinkId' in audio && typeof (audio as unknown as { setSinkId: (id: string) => Promise<void> }).setSinkId === 'function') {
-        try {
-          await (audio as unknown as { setSinkId: (id: string) => Promise<void> }).setSinkId(sinkId);
-          console.log(`[WebRTC] Audio output for peer ${peerId} switched to sink: ${sinkId}`);
-        } catch (err) {
-          console.warn(`[WebRTC] Error setting audio sink for peer ${peerId}:`, err);
-        }
-      }
-    }
+    console.warn(
+      `[WebRTC] Cannot switch audio output to "${sinkId}": ` +
+      'remote audio currently plays through SpatialAudioGraph.'
+    );
   }
 
   /**
    * Adjusts the volume of a remote peer's audio stream (0.0 to 1.0).
    * Ready for Week 2 proximity-based volume scaling!
    */
+  /**
+ * Updates remote peer volume through the Web Audio gain node.
+ */
   public setPeerVolume(peerId: string, volume: number): void {
-    const audio = this.audioElements.get(peerId);
-    if (audio) {
-      const clamped = Math.max(0, Math.min(1, volume));
-      audio.volume = clamped;
-      console.log(`[Audio] Peer ${peerId} volume updated: ${Math.round(clamped * 100)}%`);
+    if (!Number.isFinite(volume)) {
+      volume = 0;
     }
+
+    const clampedVolume = Math.max(0, Math.min(1, volume));
+
+    this.spatialAudio.updateSpatialParameters(
+      peerId,
+      clampedVolume
+    );
   }
 
   /**
-   * Updates spatial audio parameters: volume attenuation and stereo panning.
-   * Leverages Web Audio API GainNode and StereoPannerNode with smooth ramps.
+   * Updates remote peer volume and stereo panning with smooth transitions.
    */
-  public setPeerSpatial(peerId: string, volume: number, pan: number = 0, cutoffHz?: number): void {
-    this.setPeerVolume(peerId, volume);
-    this.spatialAudio.updateSpatialParameters(peerId, volume, pan, cutoffHz);
+  public setPeerSpatial(
+    peerId: string,
+    volume: number,
+    pan: number = 0
+  ): void {
+    this.spatialAudio.updateSpatialParameters(
+      peerId,
+      volume,
+      pan
+    );
   }
 
   /**
@@ -426,34 +464,100 @@ export class WebRTCManager {
   /**
    * Retries connection with ICE restart if connection failed.
    */
+
   private async retryPeerConnection(peerId: string): Promise<void> {
     const pc = this.peerConnections.get(peerId);
-    if (!pc) return;
+
+    if (
+      !pc ||
+      pc.connectionState === 'closed' ||
+      pc.signalingState === 'closed'
+    ) {
+      return;
+    }
+
+    const attempts = this.retryAttempts.get(peerId) ?? 0;
+
+    if (attempts >= this.MAX_ICE_RETRIES) {
+      console.error(
+        `[WebRTC] ICE restart limit reached for ${peerId}.`
+      );
+
+      this.callbacks.onLog?.(
+        'in',
+        'webrtc:error',
+        `ICE restart limit reached for ${peerId}`
+      );
+
+      this.closePeer(peerId);
+      return;
+    }
+
+    this.retryAttempts.set(peerId, attempts + 1);
 
     try {
       const offer = await pc.createOffer({ iceRestart: true });
+
+      if (this.peerConnections.get(peerId) !== pc) {
+        return;
+      }
+
       await pc.setLocalDescription(offer);
 
-      this.callbacks.onLog?.('out', 'webrtc:offer', `ICE Restart offer for ${peerId}`);
+      if (this.peerConnections.get(peerId) !== pc) return;
+
+      this.callbacks.onLog?.(
+        'out',
+        'webrtc:offer',
+        `ICE restart attempt ${attempts + 1} for ${peerId}`
+      );
+
       this.callbacks.onSendOffer({
         senderId: this.localSocketId,
         targetId: peerId,
         sdp: offer
       });
     } catch (err) {
-      console.error(`[WebRTC] Failed ICE restart for ${peerId}:`, err);
+      console.error(`[WebRTC] ICE restart failed for ${peerId}:`, err);
+
+      this.callbacks.onLog?.(
+        'in',
+        'webrtc:error',
+        `ICE restart failed for ${peerId}`,
+        err
+      );
+
+      if (this.peerConnections.get(peerId) === pc) {
+        this.closePeer(peerId);
+      }
     }
   }
+
 
   /**
    * Closes connection and cleans up all resources for a specific peer.
    */
   public closePeer(peerId: string): void {
+    const disconnectTimer = this.disconnectTimers.get(peerId);
+
+    if (disconnectTimer !== undefined) {
+      window.clearTimeout(disconnectTimer);
+      this.disconnectTimers.delete(peerId);
+    }
+
+    this.retryAttempts.delete(peerId);
+
     const pc = this.peerConnections.get(peerId);
     if (pc) {
       pc.onicecandidate = null;
       pc.ontrack = null;
       pc.onconnectionstatechange = null;
+      pc.oniceconnectionstatechange = null;
+      pc.onsignalingstatechange = null;
+      pc.onicegatheringstatechange = null;
+      pc.onnegotiationneeded = null;
+      pc.ondatachannel = null;
+
       pc.close();
       this.peerConnections.delete(peerId);
     }
@@ -466,8 +570,18 @@ export class WebRTCManager {
     }
 
     this.spatialAudio.detachStream(peerId);
-    this.prevBytesReceived.delete(peerId);
+
+    const remoteStream = this.remoteStreams.get(peerId);
+
+    if (remoteStream) {
+      remoteStream.getTracks().forEach((track) => {
+        track.onended = null;
+        track.stop();
+      });
+    }
+
     this.remoteStreams.delete(peerId);
+    this.prevBytesReceived.delete(peerId);
     this.queuedCandidates.delete(peerId);
     this.callbacks.onConnectionStateChange(peerId, 'closed');
     console.log(`[WebRTC] Cleaned up peer connection for ${peerId}`);

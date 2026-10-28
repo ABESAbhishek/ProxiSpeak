@@ -9,6 +9,30 @@ import type { Position3D } from '../types';
 
 export type AttenuationModel = 'linear' | 'inverse' | 'exponential';
 
+// Safe audio gain and transition limits
+export const MIN_AUDIO_GAIN = 0;
+export const MAX_AUDIO_GAIN = 1;
+
+export const DEFAULT_GAIN_SMOOTHING = 0.08;
+
+const MIN_SMOOTHING = 0.01;
+const MAX_SMOOTHING = 1.0;
+
+function clampGain(value: number): number {
+  if (!Number.isFinite(value)) return MIN_AUDIO_GAIN;
+  return Math.max(MIN_AUDIO_GAIN, Math.min(MAX_AUDIO_GAIN, value));
+}
+
+function clampPan(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(-1, Math.min(1, value));
+}
+
+function getSafeSmoothing(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_GAIN_SMOOTHING;
+  return Math.max(MIN_SMOOTHING, Math.min(MAX_SMOOTHING, value));
+}
+
 export interface SpatialAudioConfig {
   minDistance: number;       // Distance within which volume is 100% (default: 30)
   maxDistance: number;       // Distance beyond which sound cuts off (default: 260)
@@ -327,7 +351,7 @@ export class SpatialAudioGraph {
       this.audioCtx = new AudioCtx();
     }
     if (this.audioCtx.state === 'suspended') {
-      this.audioCtx.resume().catch(() => {});
+      this.audioCtx.resume().catch(() => { });
     }
     return this.audioCtx;
   }
@@ -351,7 +375,10 @@ export class SpatialAudioGraph {
       }
 
       const gain = ctx.createGain();
-      gain.gain.setValueAtTime(1.0, ctx.currentTime);
+      gain.gain.setValueAtTime(
+        MAX_AUDIO_GAIN,
+        ctx.currentTime
+      );
 
       let panner: StereoPannerNode | null = null;
       if (typeof ctx.createStereoPanner === 'function') {
@@ -390,20 +417,45 @@ export class SpatialAudioGraph {
     peerId: string,
     volume: number,
     pan: number = 0,
+    smoothing: number = DEFAULT_GAIN_SMOOTHING,
     cutoffHz?: number
   ): void {
     const nodes = this.peerNodes.get(peerId);
     if (!nodes || !this.audioCtx) return;
 
     const currentTime = this.audioCtx.currentTime;
-    const clampedVolume = Math.max(0, Math.min(1, volume));
-    const clampedPan = Math.max(-1, Math.min(1, pan));
+    const clampedVolume = clampGain(volume);
+    const clampedPan = clampPan(pan);
+    const safeSmoothing = getSafeSmoothing(smoothing);
 
-    // Smooth exponential ramp (50ms constant) prevents click artifacts
-    nodes.gain.gain.setTargetAtTime(clampedVolume, currentTime, 0.05);
+    const gainParam = nodes.gain.gain;
+
+    if (typeof gainParam.cancelAndHoldAtTime === 'function') {
+      gainParam.cancelAndHoldAtTime(currentTime);
+    } else {
+      gainParam.cancelScheduledValues(currentTime);
+    }
+
+    gainParam.setTargetAtTime(
+      clampedVolume,
+      currentTime,
+      safeSmoothing
+    );
 
     if (nodes.panner) {
-      nodes.panner.pan.setTargetAtTime(clampedPan, currentTime, 0.05);
+      const panParam = nodes.panner.pan;
+
+      if (typeof panParam.cancelAndHoldAtTime === 'function') {
+        panParam.cancelAndHoldAtTime(currentTime);
+      } else {
+        panParam.cancelScheduledValues(currentTime);
+      }
+
+      panParam.setTargetAtTime(
+        clampedPan,
+        currentTime,
+        safeSmoothing
+      );
     }
 
     if (nodes.filter && typeof cutoffHz === 'number') {
@@ -411,6 +463,8 @@ export class SpatialAudioGraph {
       nodes.filter.frequency.setTargetAtTime(clampedFreq, currentTime, 0.05);
     }
   }
+
+
 
   /**
    * Disconnects and cleans up audio nodes for a peer.
@@ -433,7 +487,7 @@ export class SpatialAudioGraph {
   public destroy(): void {
     this.peerNodes.forEach((_, id) => this.detachStream(id));
     if (this.audioCtx && this.audioCtx.state !== 'closed') {
-      this.audioCtx.close().catch(() => {});
+      this.audioCtx.close().catch(() => { });
       this.audioCtx = null;
     }
   }
