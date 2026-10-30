@@ -855,6 +855,7 @@ export const App: React.FC = () => {
                       onCloseCall={closeCall}
                       onSetVolume={setManualPeerVolume}
                       onSwitchRoom={switchRoom}
+                      localPosition={localPosition}
                     />
                   </div>
 
