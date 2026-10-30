@@ -31,7 +31,7 @@ export interface UseWebRTCAudioResult {
   startCall: (peerId: string) => Promise<void>;
   closeCall: (peerId: string) => void;
   setPeerVolume: (peerId: string, volume: number) => void;
-  setPeerSpatial: (peerId: string, volume: number, pan?: number) => void;
+  setPeerSpatial: (peerId: string, volume: number, pan?: number, cutoffHz?: number) => void;
   updateLocalPosition: (position: Position3D) => void;
   switchRoom: (roomId: string) => void;
   setAudioOutputDevice: (sinkId: string) => Promise<void>;

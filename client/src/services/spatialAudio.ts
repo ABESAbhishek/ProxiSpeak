@@ -47,11 +47,143 @@ export const DEFAULT_SPATIAL_CONFIG: SpatialAudioConfig = {
   model: 'linear'
 };
 
+/**
+ * Architectural Acoustic Presets for Week 2 Virtual Office Zones
+ */
+export const SPATIAL_PRESETS: Record<'whisper' | 'normal' | 'meeting' | 'auditorium', SpatialAudioConfig> = {
+  whisper: { minDistance: 15, maxDistance: 90, rolloffFactor: 1.5, model: 'exponential' },
+  normal: { minDistance: 30, maxDistance: 260, rolloffFactor: 1.0, model: 'linear' },
+  meeting: { minDistance: 50, maxDistance: 350, rolloffFactor: 0.8, model: 'inverse' },
+  auditorium: { minDistance: 100, maxDistance: 800, rolloffFactor: 0.5, model: 'linear' }
+};
+
+export interface OfficeAcousticZone {
+  id: string;
+  name: string;
+  preset: keyof typeof SPATIAL_PRESETS;
+  icon: string;
+  description: string;
+  bounds?: { minX: number; maxX: number; minY: number; maxY: number };
+  center?: { x: number; y: number; radius: number };
+}
+
+/**
+ * Architectural Acoustic Zones mapped to 3D virtual office spatial layout
+ */
+export const OFFICE_ACOUSTIC_ZONES: OfficeAcousticZone[] = [
+  {
+    id: 'meeting-table',
+    name: 'Conference Room',
+    preset: 'meeting',
+    icon: '👥',
+    description: 'Inverse falloff with extended clarity for group deliberations.',
+    center: { x: 500, y: 200, radius: 95 }
+  },
+  {
+    id: 'focus-pod',
+    name: 'Quiet Focus Pod',
+    preset: 'whisper',
+    icon: '🎙️',
+    description: 'Exponential dropoff preserving confidentiality in deep focus.',
+    center: { x: 844, y: 466, radius: 90 }
+  },
+  {
+    id: 'recording-studio',
+    name: 'Creative Studio',
+    preset: 'whisper',
+    icon: '🎧',
+    description: 'Acoustically treated studio zone with rapid sound damping.',
+    center: { x: 156, y: 466, radius: 90 }
+  },
+  {
+    id: 'all-hands',
+    name: 'All-Hands Auditorium',
+    preset: 'auditorium',
+    icon: '📢',
+    description: 'Long-range linear projection carrying speech across the hall.',
+    bounds: { minX: 360, maxX: 640, minY: 320, maxY: 480 }
+  },
+  {
+    id: 'open-workspace',
+    name: 'Open Workspace',
+    preset: 'normal',
+    icon: '🏢',
+    description: 'Natural distance falloff balanced for daily team collaboration.'
+  }
+];
+
+/**
+ * Detects the acoustic zone based on 3D spatial coordinates
+ */
+export function detectAcousticZone(position: Position3D): OfficeAcousticZone {
+  const x = position.x;
+  const y = position.y;
+
+  for (const zone of OFFICE_ACOUSTIC_ZONES) {
+    if (zone.center) {
+      const dx = x - zone.center.x;
+      const dy = y - zone.center.y;
+      if (Math.hypot(dx, dy) <= zone.center.radius) {
+        return zone;
+      }
+    } else if (zone.bounds) {
+      if (
+        x >= zone.bounds.minX &&
+        x <= zone.bounds.maxX &&
+        y >= zone.bounds.minY &&
+        y <= zone.bounds.maxY
+      ) {
+        return zone;
+      }
+    }
+  }
+
+  return OFFICE_ACOUSTIC_ZONES[OFFICE_ACOUSTIC_ZONES.length - 1];
+}
+
+/**
+ * Checks whether two zones require partition wall acoustic occlusion
+ */
+export function areZonesOccluded(zoneA: OfficeAcousticZone, zoneB: OfficeAcousticZone): boolean {
+  if (zoneA.id === zoneB.id) return false;
+  const privateZones = new Set(['meeting-table', 'focus-pod', 'recording-studio']);
+  return privateZones.has(zoneA.id) || privateZones.has(zoneB.id);
+}
+
 export interface SpatialAudioResult {
   distance: number;
   volume: number;            // Normalized volume 0.0 to 1.0
   pan: number;               // Stereo pan -1.0 (left) to 1.0 (right)
   azimuthDeg: number;        // Angle relative to listener facing direction (-180 to 180)
+  cutoffFrequencyHz: number; // Acoustic low-pass frequency cutoff (Hz)
+}
+
+/**
+ * Calculates physical atmospheric high-frequency air absorption cutoff.
+ * As distance increases, human voice loses high frequencies, sounding naturally distant.
+ */
+export function calculateAcousticCutoffFrequency(
+  distance: number,
+  maxDistance: number = 260
+): number {
+  if (distance <= 30) return 20000;
+  if (distance >= maxDistance) return 2000;
+  const normalized = (distance - 30) / (maxDistance - 30);
+  return Math.round(20000 - normalized * (20000 - 2500));
+}
+
+/**
+ * Calculates wall absorption & partition occlusion damping for Week 2 office rooms.
+ */
+export function calculateOcclusionDamping(
+  isDifferentRoom: boolean,
+  wallCount: number = 1
+): { volumeMultiplier: number; lowpassCutoffHz: number } {
+  if (!isDifferentRoom) return { volumeMultiplier: 1.0, lowpassCutoffHz: 20000 };
+  const safeWalls = Math.max(1, wallCount);
+  const volumeMultiplier = Math.max(0.08, Math.round(Math.pow(0.42, safeWalls) * 100) / 100);
+  const lowpassCutoffHz = Math.max(600, Math.round(2400 / safeWalls));
+  return { volumeMultiplier, lowpassCutoffHz };
 }
 
 /**
@@ -149,19 +281,60 @@ export function computeSpatialAudio(
   const distance = calculate3DDistance(listenerPos, sourcePos);
   const volume = calculateAttenuation(distance, config);
   const { pan, azimuthDeg } = calculateStereoPanAndAzimuth(listenerPos, listenerHeadingRad, sourcePos);
+  const cutoffFrequencyHz = calculateAcousticCutoffFrequency(distance, config.maxDistance);
 
   return {
     distance: Math.round(distance * 10) / 10,
     volume: Math.round(volume * 100) / 100,
     pan: Math.round(pan * 100) / 100,
-    azimuthDeg
+    azimuthDeg,
+    cutoffFrequencyHz
+  };
+}
+
+export interface OcclusionOptions {
+  config?: SpatialAudioConfig;
+  preset?: keyof typeof SPATIAL_PRESETS;
+  isDifferentRoom?: boolean;
+  wallCount?: number;
+}
+
+/**
+ * Advanced spatial evaluation function combining 3D distance, acoustic zone preset,
+ * directional stereo panning, atmospheric lowpass absorption, and partition wall occlusion damping.
+ */
+export function evaluateOccludedSpatialAudio(
+  listenerPos: Position3D,
+  listenerHeadingRad: number,
+  sourcePos: Position3D,
+  options: OcclusionOptions = {}
+): SpatialAudioResult {
+  const config = options.config || (options.preset ? SPATIAL_PRESETS[options.preset] : DEFAULT_SPATIAL_CONFIG);
+  const base = computeSpatialAudio(listenerPos, listenerHeadingRad, sourcePos, config);
+
+  if (!options.isDifferentRoom) {
+    return base;
+  }
+
+  const { volumeMultiplier, lowpassCutoffHz: wallCutoffHz } = calculateOcclusionDamping(
+    true,
+    options.wallCount ?? 1
+  );
+
+  const dampedVolume = Math.max(0, Math.min(1, Math.round(base.volume * volumeMultiplier * 100) / 100));
+  const dampedCutoff = Math.max(400, Math.min(base.cutoffFrequencyHz, wallCutoffHz));
+
+  return {
+    ...base,
+    volume: dampedVolume,
+    cutoffFrequencyHz: dampedCutoff
   };
 }
 
 /**
  * Web Audio API Spatial Audio Controller
- * Manages GainNode and StereoPannerNode per remote peer stream
- * to avoid abrupt audio clipping and provide smooth spatial attenuation.
+ * Manages BiquadFilterNode (acoustic distance/occlusion), GainNode (volume)
+ * and StereoPannerNode per remote peer stream to provide smooth spatial attenuation.
  */
 export class SpatialAudioGraph {
   private audioCtx: AudioContext | null = null;
@@ -169,6 +342,7 @@ export class SpatialAudioGraph {
     source: MediaStreamAudioSourceNode;
     gain: GainNode;
     panner: StereoPannerNode | null;
+    filter: BiquadFilterNode | null;
   }> = new Map();
 
   private getAudioContext(): AudioContext {
@@ -184,7 +358,7 @@ export class SpatialAudioGraph {
 
   /**
    * Connects a remote MediaStream to Web Audio API processing chain:
-   * MediaStreamSource -> GainNode (Volume) -> StereoPannerNode (Pan) -> Destination
+   * MediaStreamSource -> BiquadFilterNode -> GainNode -> StereoPannerNode -> Destination
    */
   public attachStream(peerId: string, stream: MediaStream): void {
     try {
@@ -192,6 +366,14 @@ export class SpatialAudioGraph {
       this.detachStream(peerId);
 
       const source = ctx.createMediaStreamSource(stream);
+
+      let filter: BiquadFilterNode | null = null;
+      if (typeof ctx.createBiquadFilter === 'function') {
+        filter = ctx.createBiquadFilter();
+        filter.type = 'lowpass';
+        filter.frequency.setValueAtTime(20000, ctx.currentTime);
+      }
+
       const gain = ctx.createGain();
       gain.gain.setValueAtTime(
         MAX_AUDIO_GAIN,
@@ -202,15 +384,26 @@ export class SpatialAudioGraph {
       if (typeof ctx.createStereoPanner === 'function') {
         panner = ctx.createStereoPanner();
         panner.pan.setValueAtTime(0, ctx.currentTime);
-        source.connect(gain);
+
+        if (filter) {
+          source.connect(filter);
+          filter.connect(gain);
+        } else {
+          source.connect(gain);
+        }
         gain.connect(panner);
         panner.connect(ctx.destination);
       } else {
-        source.connect(gain);
+        if (filter) {
+          source.connect(filter);
+          filter.connect(gain);
+        } else {
+          source.connect(gain);
+        }
         gain.connect(ctx.destination);
       }
 
-      this.peerNodes.set(peerId, { source, gain, panner });
+      this.peerNodes.set(peerId, { source, gain, panner, filter });
       console.log(`[SpatialAudio] Attached Web Audio graph for peer ${peerId}`);
     } catch (err) {
       console.warn(`[SpatialAudio] Could not attach Web Audio graph for ${peerId}:`, err);
@@ -218,15 +411,14 @@ export class SpatialAudioGraph {
   }
 
   /**
-   * Applies smooth spatial parameters (volume and stereo pan) to a peer stream.
+   * Applies smooth spatial parameters (volume, stereo pan, and acoustic low-pass cutoff) to a peer stream.
    */
-
-  
   public updateSpatialParameters(
     peerId: string,
     volume: number,
     pan: number = 0,
-    smoothing: number = DEFAULT_GAIN_SMOOTHING
+    smoothing: number = DEFAULT_GAIN_SMOOTHING,
+    cutoffHz?: number
   ): void {
     const nodes = this.peerNodes.get(peerId);
     if (!nodes || !this.audioCtx) return;
@@ -265,6 +457,11 @@ export class SpatialAudioGraph {
         safeSmoothing
       );
     }
+
+    if (nodes.filter && typeof cutoffHz === 'number') {
+      const clampedFreq = Math.max(400, Math.min(20000, cutoffHz));
+      nodes.filter.frequency.setTargetAtTime(clampedFreq, currentTime, 0.05);
+    }
   }
 
 
@@ -277,6 +474,7 @@ export class SpatialAudioGraph {
     if (nodes) {
       try {
         nodes.source.disconnect();
+        nodes.filter?.disconnect();
         nodes.gain.disconnect();
         nodes.panner?.disconnect();
       } catch {

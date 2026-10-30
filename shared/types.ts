@@ -120,6 +120,8 @@ export interface RemotePeerAudio {
   volume: number;
   /** Stereo pan between -1.0 (full left) and 1.0 (full right) */
   pan?: number;
+  /** Acoustic low-pass frequency cutoff in Hz (e.g. 20000Hz down to 2000Hz) */
+  cutoffFrequencyHz?: number;
   isMuted: boolean;
   isSpeaking?: boolean;
   position?: Position3D;

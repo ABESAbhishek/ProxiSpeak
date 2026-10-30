@@ -1,6 +1,7 @@
 import React from 'react';
-import { Users, PhoneCall, PhoneOff, Volume2, ShieldCheck, Activity, Wifi, Radio } from 'lucide-react';
-import type { RemotePeerAudio, WebRTCConnectionState } from '../types';
+import { Users, PhoneCall, PhoneOff, Volume2, ShieldCheck, Activity, Wifi, Radio, MapPin } from 'lucide-react';
+import type { Position3D, RemotePeerAudio, WebRTCConnectionState } from '../types';
+import { calculate3DDistance, detectAcousticZone, areZonesOccluded } from '../services/spatialAudio';
 
 interface PeerListProps {
   peers: Record<string, RemotePeerAudio>;
@@ -11,6 +12,7 @@ interface PeerListProps {
   onCloseCall: (peerId: string) => void;
   onSetVolume: (peerId: string, volume: number) => void;
   onSwitchRoom: (roomId: string) => void;
+  localPosition?: Position3D;
 }
 
 export const PeerList: React.FC<PeerListProps> = ({
@@ -20,7 +22,8 @@ export const PeerList: React.FC<PeerListProps> = ({
   onStartCall,
   onCloseCall,
   onSetVolume,
-  onSwitchRoom
+  onSwitchRoom,
+  localPosition
 }) => {
   const peerEntries = Object.entries(peers);
 
@@ -98,6 +101,12 @@ export const PeerList: React.FC<PeerListProps> = ({
             const stats = peer.stats;
             const isSpeaking = peer.isSpeaking;
             const isMuted = peer.isMuted;
+            const distance = (localPosition && peer.position)
+              ? Math.round(calculate3DDistance(localPosition, peer.position))
+              : null;
+            const peerZone = peer.position ? detectAcousticZone(peer.position) : null;
+            const localZone = localPosition ? detectAcousticZone(localPosition) : null;
+            const isOccluded = (localZone && peerZone) ? areZonesOccluded(localZone, peerZone) : false;
 
             return (
               <div
@@ -131,7 +140,41 @@ export const PeerList: React.FC<PeerListProps> = ({
                         )}
                         <span className="text-[11px] font-mono text-slate-400">ID: {peerId.substring(0, 8)}...</span>
                       </div>
-                      <div className="mt-0.5">{getConnectionBadge(peer.connectionState)}</div>
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                        {getConnectionBadge(peer.connectionState)}
+                        {distance !== null && (
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-[10px] font-mono border flex items-center gap-1 ${
+                              distance <= 90
+                                ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                                : distance <= 260
+                                ? 'bg-indigo-500/15 text-indigo-300 border-indigo-500/30'
+                                : 'bg-slate-800 text-slate-400 border-slate-700'
+                            }`}
+                            title={`3D Euclidean distance: ${distance} units`}
+                          >
+                            <MapPin className="w-2.5 h-2.5 text-indigo-400" />
+                            {distance}u
+                          </span>
+                        )}
+                        {peerZone && (
+                          <span
+                            className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-slate-800/90 text-slate-300 border border-slate-700/80 flex items-center gap-1"
+                            title={`Zone preset: ${peerZone.preset} (${peerZone.description})`}
+                          >
+                            <span>{peerZone.icon}</span>
+                            <span>{peerZone.name}</span>
+                          </span>
+                        )}
+                        {isOccluded && (
+                          <span
+                            className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1"
+                            title="Cross-zone partition wall dampens speech frequencies"
+                          >
+                            <span>🧱 Wall Occlusion</span>
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
 
@@ -191,7 +234,29 @@ export const PeerList: React.FC<PeerListProps> = ({
                     </span>
                   </div>
 
-                  <div className="flex items-center gap-2.5 ml-auto">
+                  <div className="flex items-center gap-2.5 ml-auto flex-wrap">
+                    {distance !== null && (
+                      <span className="text-[10px] text-slate-400 font-mono hidden sm:inline">
+                        {distance <= 30 ? 'Near-field (100%)' : distance <= 260 ? `Falloff (${Math.round((peer.volume ?? 1) * 100)}%)` : 'Silent / Beyond Range'}
+                      </span>
+                    )}
+                    {typeof peer.pan === 'number' && Math.abs(peer.pan) > 0.05 && (
+                      <span className="text-[10px] text-cyan-400 font-mono bg-cyan-500/10 px-1.5 py-0.5 rounded border border-cyan-500/20">
+                        {peer.pan > 0 ? `Pan R ${Math.round(peer.pan * 100)}%` : `Pan L ${Math.round(Math.abs(peer.pan) * 100)}%`}
+                      </span>
+                    )}
+                    {typeof peer.cutoffFrequencyHz === 'number' && (
+                      <span
+                        className={`text-[10px] font-mono px-1.5 py-0.5 rounded border ${
+                          peer.cutoffFrequencyHz < 3000
+                            ? 'text-amber-300 bg-amber-500/15 border-amber-500/30'
+                            : 'text-indigo-300 bg-indigo-500/10 border-indigo-500/20'
+                        }`}
+                        title="Web Audio API Lowpass Filter Cutoff"
+                      >
+                        {(peer.cutoffFrequencyHz / 1000).toFixed(1)} kHz
+                      </span>
+                    )}
                     <span className="text-[11px] text-slate-400 font-mono">
                       Volume: {Math.round((peer.volume ?? 1) * 100)}%
                     </span>
