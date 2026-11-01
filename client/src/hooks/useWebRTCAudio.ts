@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { socket, socketService } from '../services/socket';
 import { WebRTCManager } from '../services/webrtcManager';
-import { computeSpatialAudio } from '../services/spatialAudio';
+import { computeSpatialAudio, evaluateOccludedSpatialAudio, detectAcousticZone, areZonesOccluded } from '../services/spatialAudio';
 import type {
   WebRTCOfferPayload,
   WebRTCAnswerPayload,
@@ -560,28 +560,39 @@ export function useWebRTCAudio(
   useEffect(() => {
     const spatialUpdates: Record<
       string,
-      { volume: number; pan: number }
+      { volume: number; pan: number; cutoffHz?: number }
     > = {};
 
     Object.values(peers).forEach((peer) => {
       if (!peer.position) return;
 
-      const spatial = computeSpatialAudio(
+      const peerZone = detectAcousticZone(peer.position);
+      const localZone = detectAcousticZone(localPosition);
+      const isOccluded = areZonesOccluded(localZone, peerZone);
+
+      const spatial = evaluateOccludedSpatialAudio(
         localPosition,
         0,
-        peer.position
+        peer.position,
+        {
+          preset: localZone.preset,
+          isDifferentRoom: isOccluded,
+          wallCount: 1
+        }
       );
 
       const volume = Math.max(0, Math.min(1, spatial.volume));
       const pan = Math.max(-1, Math.min(1, spatial.pan));
+      const cutoffHz = spatial.cutoffFrequencyHz;
 
-      spatialUpdates[peer.peerId] = { volume, pan };
+      spatialUpdates[peer.peerId] = { volume, pan, cutoffHz };
 
-      // Apply gain through the manager's existing remote-audio path.
+      // Apply gain, pan, and low-pass cutoff through the manager's remote-audio path.
       webrtcManagerRef.current?.setPeerSpatial(
         peer.peerId,
         volume,
-        pan
+        pan,
+        cutoffHz
       );
     });
 
@@ -595,12 +606,14 @@ export function useWebRTCAudio(
 
         if (
           Math.abs((existing.volume ?? 1) - spatial.volume) > 0.01 ||
-          Math.abs((existing.pan ?? 0) - spatial.pan) > 0.01
+          Math.abs((existing.pan ?? 0) - spatial.pan) > 0.01 ||
+          (spatial.cutoffHz && Math.abs((existing.cutoffFrequencyHz ?? 20000) - spatial.cutoffHz) > 50)
         ) {
           next[peerId] = {
             ...existing,
             volume: spatial.volume,
-            pan: spatial.pan
+            pan: spatial.pan,
+            cutoffFrequencyHz: spatial.cutoffHz ?? existing.cutoffFrequencyHz
           };
 
           changed = true;
@@ -641,14 +654,15 @@ export function useWebRTCAudio(
   }, []);
 
   const setPeerSpatial = useCallback(
-    (peerId: string, volume: number, pan: number = 0) => {
+    (peerId: string, volume: number, pan: number = 0, cutoffHz?: number) => {
       const safeVolume = Math.max(0, Math.min(1, volume));
       const safePan = Math.max(-1, Math.min(1, pan));
 
       webrtcManagerRef.current?.setPeerSpatial(
         peerId,
         safeVolume,
-        safePan
+        safePan,
+        cutoffHz
       );
 
       setPeers((prev) => {
@@ -660,7 +674,8 @@ export function useWebRTCAudio(
           [peerId]: {
             ...existing,
             volume: safeVolume,
-            pan: safePan
+            pan: safePan,
+            cutoffFrequencyHz: typeof cutoffHz === 'number' ? cutoffHz : existing.cutoffFrequencyHz
           }
         };
       });

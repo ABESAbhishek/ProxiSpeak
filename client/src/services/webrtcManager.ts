@@ -5,7 +5,7 @@ import type {
   WebRTCConnectionState,
   PeerAudioStats
 } from '../types';
-import { SpatialAudioGraph } from './spatialAudio';
+import { SpatialAudioGraph, DEFAULT_GAIN_SMOOTHING } from './spatialAudio';
 
 export interface WebRTCManagerCallbacks {
   onSendOffer: (payload: WebRTCOfferPayload) => void;
@@ -365,12 +365,15 @@ export class WebRTCManager {
   public setPeerSpatial(
     peerId: string,
     volume: number,
-    pan: number = 0
+    pan: number = 0,
+    cutoffHz?: number
   ): void {
     this.spatialAudio.updateSpatialParameters(
       peerId,
       volume,
-      pan
+      pan,
+      DEFAULT_GAIN_SMOOTHING,
+      cutoffHz
     );
   }
 
