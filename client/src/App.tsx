@@ -90,6 +90,8 @@ export const App: React.FC = () => {
     startMicrophone,
     stopMicrophone,
     toggleMute,
+    micGain,
+    setMicGain,
   } = useMicrophone();
 
   const {
@@ -843,6 +845,8 @@ export const App: React.FC = () => {
                     onStart={startMicrophone}
                     onStop={stopMicrophone}
                     onToggleMute={toggleMute}
+                    micGain={micGain}
+                    onSetMicGain={setMicGain}
                   />
 
                   <div className="border-t border-white/[0.06] pt-6">

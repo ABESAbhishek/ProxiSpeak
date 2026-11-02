@@ -32,6 +32,8 @@ export interface UseMicrophoneResult {
   startMicrophone: (deviceId?: string) => Promise<MediaStream | null>;
   stopMicrophone: () => void;
   toggleMute: () => void;
+  micGain: number;
+  setMicGain: (gain: number) => void;
 }
 
 export function useMicrophone(): UseMicrophoneResult {
@@ -52,6 +54,10 @@ export function useMicrophone(): UseMicrophoneResult {
     noiseSuppression: true,
     autoGainControl: true
   });
+
+  const [micGain, setMicGainState] = useState<number>(1.0);
+  const micGainRef = useRef<number>(1.0);
+  const gainNodeRef = useRef<GainNode | null>(null);
 
   // Microphone Self-Test / Loopback test state
   const [isSelfTesting, setIsSelfTesting] = useState<boolean>(false);
@@ -124,8 +130,13 @@ export function useMicrophone(): UseMicrophoneResult {
       analyser.fftSize = 64;
       analyserRef.current = analyser;
 
+      const gainNode = audioCtx.createGain();
+      gainNode.gain.setValueAtTime(micGainRef.current, audioCtx.currentTime);
+      gainNodeRef.current = gainNode;
+
       const source = audioCtx.createMediaStreamSource(mediaStream);
-      source.connect(analyser);
+      source.connect(gainNode);
+      gainNode.connect(analyser);
 
       const bufferLength = analyser.frequencyBinCount;
       const dataArray = new Uint8Array(bufferLength);
@@ -192,6 +203,7 @@ export function useMicrophone(): UseMicrophoneResult {
       audioContextRef.current.close().catch(() => { });
       audioContextRef.current = null;
     }
+    gainNodeRef.current = null;
     analyserRef.current = null;
     setAudioLevel(0);
     setIsSpeaking(false);
@@ -391,6 +403,15 @@ export function useMicrophone(): UseMicrophoneResult {
   /**
    * Toggles mute state without releasing the media track.
    */
+  const setMicGain = useCallback((gain: number) => {
+    const safeGain = Math.max(0, Math.min(2.0, Number.isFinite(gain) ? gain : 1.0));
+    micGainRef.current = safeGain;
+    setMicGainState(safeGain);
+    if (gainNodeRef.current && audioContextRef.current) {
+      gainNodeRef.current.gain.setTargetAtTime(safeGain, audioContextRef.current.currentTime, 0.05);
+    }
+  }, []);
+
   const toggleMute = useCallback(() => {
     if (!streamRef.current) return;
 
@@ -541,6 +562,8 @@ export function useMicrophone(): UseMicrophoneResult {
     clearSelfTest,
     startMicrophone,
     stopMicrophone,
-    toggleMute
+    toggleMute,
+    micGain,
+    setMicGain
   };
 }
