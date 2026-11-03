@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { socket, socketService } from '../services/socket';
 import { WebRTCManager } from '../services/webrtcManager';
-import { computeSpatialAudio } from '../services/spatialAudio';
+// import { computeSpatialAudio } from '../services/spatialAudio';
 import type {
   WebRTCOfferPayload,
   WebRTCAnswerPayload,
@@ -57,8 +57,8 @@ export function useWebRTCAudio(
     null
   );
   const [peers, setPeers] = useState<Record<string, RemotePeerAudio>>({});
-  const [localPosition, setLocalPosition] =
-    useState<Position3D>(initialPosition);
+  // const [localPosition, setLocalPosition] =
+  //   useState<Position3D>(initialPosition);
   const [signalingLogs, setSignalingLogs] = useState<SignalingLogEntry[]>([]);
 
   const webrtcManagerRef = useRef<WebRTCManager | null>(null);
@@ -555,61 +555,61 @@ export function useWebRTCAudio(
     return () => clearInterval(interval);
   }, [isConnected]);
 
-  // Automatically calculate and apply each remote user's audio gain
-  // whenever local or remote positions change.
-  useEffect(() => {
-    const spatialUpdates: Record<
-      string,
-      { volume: number; pan: number }
-    > = {};
+  // // Automatically calculate and apply each remote user's audio gain
+  // // whenever local or remote positions change.
+  // useEffect(() => {
+  //   const spatialUpdates: Record<
+  //     string,
+  //     { volume: number; pan: number }
+  //   > = {};
 
-    Object.values(peers).forEach((peer) => {
-      if (!peer.position) return;
+  //   Object.values(peers).forEach((peer) => {
+  //     if (!peer.position) return;
 
-      const spatial = computeSpatialAudio(
-        localPosition,
-        0,
-        peer.position
-      );
+  //     const spatial = computeSpatialAudio(
+  //       localPosition,
+  //       0,
+  //       peer.position
+  //     );
 
-      const volume = Math.max(0, Math.min(1, spatial.volume));
-      const pan = Math.max(-1, Math.min(1, spatial.pan));
+  //     const volume = Math.max(0, Math.min(1, spatial.volume));
+  //     const pan = Math.max(-1, Math.min(1, spatial.pan));
 
-      spatialUpdates[peer.peerId] = { volume, pan };
+  //     spatialUpdates[peer.peerId] = { volume, pan };
 
-      // Apply gain through the manager's existing remote-audio path.
-      webrtcManagerRef.current?.setPeerSpatial(
-        peer.peerId,
-        volume,
-        pan
-      );
-    });
+  //     // Apply gain through the manager's existing remote-audio path.
+  //     webrtcManagerRef.current?.setPeerSpatial(
+  //       peer.peerId,
+  //       volume,
+  //       pan
+  //     );
+  //   });
 
-    setPeers((previous) => {
-      let changed = false;
-      const next = { ...previous };
+  //   setPeers((previous) => {
+  //     let changed = false;
+  //     const next = { ...previous };
 
-      Object.entries(spatialUpdates).forEach(([peerId, spatial]) => {
-        const existing = previous[peerId];
-        if (!existing) return;
+  //     Object.entries(spatialUpdates).forEach(([peerId, spatial]) => {
+  //       const existing = previous[peerId];
+  //       if (!existing) return;
 
-        if (
-          Math.abs((existing.volume ?? 1) - spatial.volume) > 0.01 ||
-          Math.abs((existing.pan ?? 0) - spatial.pan) > 0.01
-        ) {
-          next[peerId] = {
-            ...existing,
-            volume: spatial.volume,
-            pan: spatial.pan
-          };
+  //       if (
+  //         Math.abs((existing.volume ?? 1) - spatial.volume) > 0.01 ||
+  //         Math.abs((existing.pan ?? 0) - spatial.pan) > 0.01
+  //       ) {
+  //         next[peerId] = {
+  //           ...existing,
+  //           volume: spatial.volume,
+  //           pan: spatial.pan
+  //         };
 
-          changed = true;
-        }
-      });
+  //         changed = true;
+  //       }
+  //     });
 
-      return changed ? next : previous;
-    });
-  }, [peers, localPosition]);
+  //     return changed ? next : previous;
+  //   });
+  // }, [peers, localPosition]);
 
   const startCall = useCallback(async (peerId: string) => {
     if (webrtcManagerRef.current) {
@@ -671,7 +671,7 @@ export function useWebRTCAudio(
   const updateLocalPosition = useCallback(
     (position: Position3D) => {
       initialPositionRef.current = position;
-      setLocalPosition(position);
+      // setLocalPosition(position);
 
       if (isConnected) {
         socketService.updatePosition(position);

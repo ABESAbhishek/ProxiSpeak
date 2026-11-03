@@ -41,6 +41,7 @@ export class WebRTCManager {
   private prevBytesReceived: Map<string, { bytes: number; timestamp: number }> = new Map();
   private disconnectTimers: Map<string, number> = new Map();
   private retryAttempts: Map<string, number> = new Map();
+  private retryInProgress: Set<string> = new Set();
 
   private readonly MAX_ICE_RETRIES = 2;
   private readonly DISCONNECT_GRACE_PERIOD_MS = 5000;
@@ -176,7 +177,12 @@ export class WebRTCManager {
       if (state === 'failed') {
         console.warn(`[WebRTC] Connection failed with ${peerId}.`);
 
-        if (!this.retryAttempts.has(peerId)) {
+        const attempts = this.retryAttempts.get(peerId) ?? 0;
+
+        if (
+          attempts < this.MAX_ICE_RETRIES &&
+          !this.retryInProgress.has(peerId)
+        ) {
           void this.retryPeerConnection(peerId);
         }
 
@@ -465,7 +471,8 @@ export class WebRTCManager {
     if (
       !pc ||
       pc.connectionState === 'closed' ||
-      pc.signalingState === 'closed'
+      pc.signalingState === 'closed' ||
+      this.retryInProgress.has(peerId)
     ) {
       return;
     }
@@ -473,9 +480,7 @@ export class WebRTCManager {
     const attempts = this.retryAttempts.get(peerId) ?? 0;
 
     if (attempts >= this.MAX_ICE_RETRIES) {
-      console.error(
-        `[WebRTC] ICE restart limit reached for ${peerId}.`
-      );
+      console.error(`[WebRTC] ICE restart limit reached for ${peerId}.`);
 
       this.callbacks.onLog?.(
         'in',
@@ -487,14 +492,13 @@ export class WebRTCManager {
       return;
     }
 
+    this.retryInProgress.add(peerId);
     this.retryAttempts.set(peerId, attempts + 1);
 
     try {
       const offer = await pc.createOffer({ iceRestart: true });
 
-      if (this.peerConnections.get(peerId) !== pc) {
-        return;
-      }
+      if (this.peerConnections.get(peerId) !== pc) return;
 
       await pc.setLocalDescription(offer);
 
@@ -509,8 +513,9 @@ export class WebRTCManager {
       this.callbacks.onSendOffer({
         senderId: this.localSocketId,
         targetId: peerId,
-        sdp: offer
+        sdp: pc.localDescription ?? offer
       });
+
     } catch (err) {
       console.error(`[WebRTC] ICE restart failed for ${peerId}:`, err);
 
@@ -521,9 +526,8 @@ export class WebRTCManager {
         err
       );
 
-      if (this.peerConnections.get(peerId) === pc) {
-        this.closePeer(peerId);
-      }
+    } finally {
+      this.retryInProgress.delete(peerId);
     }
   }
 
@@ -540,6 +544,7 @@ export class WebRTCManager {
     }
 
     this.retryAttempts.delete(peerId);
+    this.retryInProgress.delete(peerId);
 
     const pc = this.peerConnections.get(peerId);
     if (pc) {
