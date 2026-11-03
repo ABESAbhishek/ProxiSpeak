@@ -40,10 +40,12 @@ export class WebRTCManager {
   private statsInterval: number | null = null;
   private prevBytesReceived: Map<string, { bytes: number; timestamp: number }> = new Map();
   private disconnectTimers: Map<string, number> = new Map();
+  private retryTimeouts: Map<string, number> = new Map();
   private retryAttempts: Map<string, number> = new Map();
+  private isRestartingIce: Map<string, boolean> = new Map();
 
-  private readonly MAX_ICE_RETRIES = 2;
-  private readonly DISCONNECT_GRACE_PERIOD_MS = 5000;
+  private readonly MAX_ICE_RETRIES = 3;
+  private readonly DISCONNECT_GRACE_PERIOD_MS = 4000;
 
   constructor(callbacks: WebRTCManagerCallbacks) {
     this.callbacks = callbacks;
@@ -140,18 +142,24 @@ export class WebRTCManager {
 
       if (state === 'connected') {
         const timer = this.disconnectTimers.get(peerId);
-
         if (timer !== undefined) {
           window.clearTimeout(timer);
           this.disconnectTimers.delete(peerId);
         }
 
+        const retryTimer = this.retryTimeouts.get(peerId);
+        if (retryTimer !== undefined) {
+          window.clearTimeout(retryTimer);
+          this.retryTimeouts.delete(peerId);
+        }
+
         this.retryAttempts.delete(peerId);
+        this.isRestartingIce.delete(peerId);
         return;
       }
 
       if (state === 'disconnected') {
-        // Allow temporary network interruptions to recover.
+        // Allow temporary network interruptions to recover before attempting ICE restart
         if (!this.disconnectTimers.has(peerId)) {
           const timer = window.setTimeout(() => {
             this.disconnectTimers.delete(peerId);
@@ -161,9 +169,9 @@ export class WebRTCManager {
               pc.connectionState === 'disconnected'
             ) {
               console.warn(
-                `[WebRTC] Peer ${peerId} remained disconnected. Cleaning up.`
+                `[WebRTC] Peer ${peerId} remained disconnected. Initiating ICE restart.`
               );
-              this.closePeer(peerId);
+              void this.retryPeerConnection(peerId);
             }
           }, this.DISCONNECT_GRACE_PERIOD_MS);
 
@@ -174,12 +182,8 @@ export class WebRTCManager {
       }
 
       if (state === 'failed') {
-        console.warn(`[WebRTC] Connection failed with ${peerId}.`);
-
-        if (!this.retryAttempts.has(peerId)) {
-          void this.retryPeerConnection(peerId);
-        }
-
+        console.warn(`[WebRTC] Connection failed with ${peerId}. Triggering ICE recovery.`);
+        void this.retryPeerConnection(peerId, true);
         return;
       }
 
@@ -188,9 +192,47 @@ export class WebRTCManager {
       }
     };
 
-
     pc.oniceconnectionstatechange = () => {
-      console.log(`[WebRTC] Peer ${peerId} ICE state: ${pc.iceConnectionState}`);
+      if (this.peerConnections.get(peerId) !== pc) return;
+
+      const iceState = pc.iceConnectionState;
+      console.log(`[WebRTC] Peer ${peerId} ICE state: ${iceState}`);
+
+      if (iceState === 'connected' || iceState === 'completed') {
+        const timer = this.disconnectTimers.get(peerId);
+        if (timer !== undefined) {
+          window.clearTimeout(timer);
+          this.disconnectTimers.delete(peerId);
+        }
+
+        const retryTimer = this.retryTimeouts.get(peerId);
+        if (retryTimer !== undefined) {
+          window.clearTimeout(retryTimer);
+          this.retryTimeouts.delete(peerId);
+        }
+
+        this.retryAttempts.delete(peerId);
+        this.isRestartingIce.delete(peerId);
+      } else if (iceState === 'disconnected') {
+        if (!this.disconnectTimers.has(peerId)) {
+          const timer = window.setTimeout(() => {
+            this.disconnectTimers.delete(peerId);
+
+            if (
+              this.peerConnections.get(peerId) === pc &&
+              (pc.iceConnectionState === 'disconnected' || pc.connectionState === 'disconnected')
+            ) {
+              console.warn(`[WebRTC] Peer ${peerId} ICE remained disconnected. Triggering ICE restart.`);
+              void this.retryPeerConnection(peerId);
+            }
+          }, this.DISCONNECT_GRACE_PERIOD_MS);
+
+          this.disconnectTimers.set(peerId, timer);
+        }
+      } else if (iceState === 'failed') {
+        console.warn(`[WebRTC] Peer ${peerId} ICE connection failed. Initiating automatic ICE restart.`);
+        void this.retryPeerConnection(peerId, true);
+      }
     };
 
     this.peerConnections.set(peerId, pc);
@@ -468,7 +510,79 @@ export class WebRTCManager {
    * Retries connection with ICE restart if connection failed.
    */
 
-  private async retryPeerConnection(peerId: string): Promise<void> {
+  /**
+   * Explicitly triggers an ICE restart offer to recover an existing peer connection.
+   */
+  public async restartIce(peerId: string): Promise<boolean> {
+    const pc = this.peerConnections.get(peerId);
+    if (!pc || pc.connectionState === 'closed' || pc.signalingState === 'closed') {
+      console.warn(`[WebRTC] Cannot restart ICE: Peer ${peerId} is not connected or closed.`);
+      return false;
+    }
+
+    if (this.isRestartingIce.get(peerId)) {
+      console.log(`[WebRTC] ICE restart already in progress for peer ${peerId}`);
+      return true;
+    }
+
+    this.isRestartingIce.set(peerId, true);
+
+    try {
+      // Check signaling state: if negotiation in-flight, rollback if supported
+      if (pc.signalingState !== 'stable') {
+        console.warn(`[WebRTC] Peer ${peerId} signalingState is '${pc.signalingState}'. Attempting rollback for ICE restart.`);
+        try {
+          await pc.setLocalDescription({ type: 'rollback' });
+        } catch {
+          // Rollback might not be supported in some browser states, proceed with offer
+        }
+      }
+
+      console.log(`[WebRTC] Creating ICE restart offer for peer: ${peerId}`);
+      const offer = await pc.createOffer({
+        iceRestart: true,
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: false
+      });
+
+      if (this.peerConnections.get(peerId) !== pc) {
+        this.isRestartingIce.delete(peerId);
+        return false;
+      }
+
+      await pc.setLocalDescription(offer);
+
+      if (this.peerConnections.get(peerId) !== pc) {
+        this.isRestartingIce.delete(peerId);
+        return false;
+      }
+
+      this.callbacks.onLog?.('out', 'webrtc:offer', `Created ICE restart offer for ${peerId}`);
+      this.callbacks.onSendOffer({
+        senderId: this.localSocketId,
+        targetId: peerId,
+        sdp: offer
+      });
+
+      return true;
+    } catch (err) {
+      console.error(`[WebRTC] Failed to create ICE restart offer for ${peerId}:`, err);
+      this.callbacks.onLog?.(
+        'in',
+        'webrtc:error',
+        `ICE restart failed for ${peerId}`,
+        err
+      );
+      return false;
+    } finally {
+      this.isRestartingIce.delete(peerId);
+    }
+  }
+
+  /**
+   * Retries connection with exponential backoff and ICE restart if connection failed or dropped.
+   */
+  private async retryPeerConnection(peerId: string, immediate: boolean = false): Promise<void> {
     const pc = this.peerConnections.get(peerId);
 
     if (
@@ -483,13 +597,13 @@ export class WebRTCManager {
 
     if (attempts >= this.MAX_ICE_RETRIES) {
       console.error(
-        `[WebRTC] ICE restart limit reached for ${peerId}.`
+        `[WebRTC] Max ICE restart retries (${this.MAX_ICE_RETRIES}) reached for peer ${peerId}. Cleaning up.`
       );
 
       this.callbacks.onLog?.(
         'in',
         'webrtc:error',
-        `ICE restart limit reached for ${peerId}`
+        `ICE restart limit reached (${this.MAX_ICE_RETRIES} attempts) for ${peerId}`
       );
 
       this.closePeer(peerId);
@@ -498,60 +612,71 @@ export class WebRTCManager {
 
     this.retryAttempts.set(peerId, attempts + 1);
 
-    try {
-      const offer = await pc.createOffer({ iceRestart: true });
+    // Exponential backoff with jitter
+    const backoffMs = immediate
+      ? 200
+      : Math.min(1000 * Math.pow(1.8, attempts), 5000) + Math.random() * 300;
 
-      if (this.peerConnections.get(peerId) !== pc) {
-        return;
-      }
+    console.log(
+      `[WebRTC] Scheduling ICE restart attempt ${attempts + 1}/${this.MAX_ICE_RETRIES} for peer ${peerId} in ${Math.round(backoffMs)}ms`
+    );
 
-      await pc.setLocalDescription(offer);
+    const existingTimeout = this.retryTimeouts.get(peerId);
+    if (existingTimeout !== undefined) {
+      window.clearTimeout(existingTimeout);
+      this.retryTimeouts.delete(peerId);
+    }
 
+    const timer = window.setTimeout(async () => {
+      this.retryTimeouts.delete(peerId);
       if (this.peerConnections.get(peerId) !== pc) return;
 
-      this.callbacks.onLog?.(
-        'out',
-        'webrtc:offer',
-        `ICE restart attempt ${attempts + 1} for ${peerId}`
-      );
-
-      this.callbacks.onSendOffer({
-        senderId: this.localSocketId,
-        targetId: peerId,
-        sdp: offer
-      });
-    } catch (err) {
-      console.error(`[WebRTC] ICE restart failed for ${peerId}:`, err);
-
-      this.callbacks.onLog?.(
-        'in',
-        'webrtc:error',
-        `ICE restart failed for ${peerId}`,
-        err
-      );
-
-      if (this.peerConnections.get(peerId) === pc) {
-        this.closePeer(peerId);
+      const success = await this.restartIce(peerId);
+      if (!success && this.peerConnections.get(peerId) === pc) {
+        const curAttempts = this.retryAttempts.get(peerId) ?? 0;
+        if (curAttempts >= this.MAX_ICE_RETRIES) {
+          this.closePeer(peerId);
+        }
       }
-    }
+    }, backoffMs);
+
+    this.retryTimeouts.set(peerId, timer);
   }
 
-
   /**
-   * Closes connection and cleans up all resources for a specific peer.
+   * Closes connection and comprehensively cleans up all audio and media resources for a peer.
    */
   public closePeer(peerId: string): void {
     const disconnectTimer = this.disconnectTimers.get(peerId);
-
     if (disconnectTimer !== undefined) {
       window.clearTimeout(disconnectTimer);
       this.disconnectTimers.delete(peerId);
     }
 
+    const retryTimer = this.retryTimeouts.get(peerId);
+    if (retryTimer !== undefined) {
+      window.clearTimeout(retryTimer);
+      this.retryTimeouts.delete(peerId);
+    }
+
     this.retryAttempts.delete(peerId);
+    this.isRestartingIce.delete(peerId);
 
     const pc = this.peerConnections.get(peerId);
     if (pc) {
+      try {
+        const senders = pc.getSenders();
+        senders.forEach((sender) => {
+          try {
+            pc.removeTrack(sender);
+          } catch {
+            // ignore track removal errors on teardown
+          }
+        });
+      } catch {
+        // ignore senders access error
+      }
+
       pc.onicecandidate = null;
       pc.ontrack = null;
       pc.onconnectionstatechange = null;
@@ -561,25 +686,39 @@ export class WebRTCManager {
       pc.onnegotiationneeded = null;
       pc.ondatachannel = null;
 
-      pc.close();
+      try {
+        pc.close();
+      } catch {
+        // ignore close error
+      }
       this.peerConnections.delete(peerId);
     }
 
     const audio = this.audioElements.get(peerId);
     if (audio) {
-      audio.pause();
-      audio.srcObject = null;
+      try {
+        audio.pause();
+        audio.srcObject = null;
+        audio.removeAttribute('src');
+      } catch {
+        // ignore audio cleanup error
+      }
       this.audioElements.delete(peerId);
     }
 
     this.spatialAudio.detachStream(peerId);
 
     const remoteStream = this.remoteStreams.get(peerId);
-
     if (remoteStream) {
       remoteStream.getTracks().forEach((track) => {
         track.onended = null;
-        track.stop();
+        track.onmute = null;
+        track.onunmute = null;
+        try {
+          track.stop();
+        } catch {
+          // ignore track stop error
+        }
       });
     }
 
@@ -587,7 +726,7 @@ export class WebRTCManager {
     this.prevBytesReceived.delete(peerId);
     this.queuedCandidates.delete(peerId);
     this.callbacks.onConnectionStateChange(peerId, 'closed');
-    console.log(`[WebRTC] Cleaned up peer connection for ${peerId}`);
+    console.log(`[WebRTC] Cleaned up peer connection and audio resources for ${peerId}`);
   }
 
   /**
@@ -598,6 +737,12 @@ export class WebRTCManager {
     this.spatialAudio.destroy();
     const peerIds = Array.from(this.peerConnections.keys());
     peerIds.forEach((id) => this.closePeer(id));
+    this.disconnectTimers.forEach((timer) => window.clearTimeout(timer));
+    this.disconnectTimers.clear();
+    this.retryTimeouts.forEach((timer) => window.clearTimeout(timer));
+    this.retryTimeouts.clear();
+    this.retryAttempts.clear();
+    this.isRestartingIce.clear();
     this.localStream = null;
   }
 }

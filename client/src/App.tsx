@@ -106,6 +106,7 @@ export const App: React.FC = () => {
     signalingLogs,
     clearLogs,
     startCall,
+    restartIce,
     closeCall,
     setPeerVolume,
     setPeerSpatial,
@@ -857,6 +858,7 @@ export const App: React.FC = () => {
                       isMicActive={micIsActive}
                       onStartCall={startCall}
                       onCloseCall={closeCall}
+                      onRestartIce={restartIce}
                       onSetVolume={setManualPeerVolume}
                       onSwitchRoom={switchRoom}
                       localPosition={localPosition}

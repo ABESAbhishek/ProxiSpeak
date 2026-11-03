@@ -1,5 +1,5 @@
 import React from 'react';
-import { Users, PhoneCall, PhoneOff, Volume2, ShieldCheck, Activity, Wifi, Radio, MapPin } from 'lucide-react';
+import { Users, PhoneCall, PhoneOff, Volume2, ShieldCheck, Activity, Wifi, Radio, MapPin, RefreshCw } from 'lucide-react';
 import type { Position3D, RemotePeerAudio, WebRTCConnectionState } from '../types';
 import { calculate3DDistance, detectAcousticZone, areZonesOccluded } from '../services/spatialAudio';
 
@@ -10,6 +10,7 @@ interface PeerListProps {
   isMicActive: boolean;
   onStartCall: (peerId: string) => void;
   onCloseCall: (peerId: string) => void;
+  onRestartIce?: (peerId: string) => void;
   onSetVolume: (peerId: string, volume: number) => void;
   onSwitchRoom: (roomId: string) => void;
   localPosition?: Position3D;
@@ -21,6 +22,7 @@ export const PeerList: React.FC<PeerListProps> = ({
   isMicActive,
   onStartCall,
   onCloseCall,
+  onRestartIce,
   onSetVolume,
   onSwitchRoom,
   localPosition
@@ -188,15 +190,26 @@ export const PeerList: React.FC<PeerListProps> = ({
                         <PhoneOff className="w-3.5 h-3.5 mr-1.5" /> End Call
                       </button>
                     ) : (
-                      <button
-                        onClick={() => onStartCall(peerId)}
-                        disabled={isConnecting}
-                        className="btn btn-sm btn-primary"
-                        title={!isMicActive ? 'Start audio call' : 'Start audio call'}
-                      >
-                        <PhoneCall className="w-3.5 h-3.5 mr-1.5" />
-                        {isConnecting ? 'Handshaking...' : 'Call Peer'}
-                      </button>
+                      <>
+                        {(peer.connectionState === 'failed' || peer.connectionState === 'disconnected') && onRestartIce && (
+                          <button
+                            onClick={() => onRestartIce(peerId)}
+                            className="btn btn-sm btn-warning flex items-center"
+                            title="Attempt ICE restart and reconnect"
+                          >
+                            <RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Reconnect
+                          </button>
+                        )}
+                        <button
+                          onClick={() => onStartCall(peerId)}
+                          disabled={isConnecting}
+                          className="btn btn-sm btn-primary"
+                          title={!isMicActive ? 'Start audio call' : 'Start audio call'}
+                        >
+                          <PhoneCall className="w-3.5 h-3.5 mr-1.5" />
+                          {isConnecting ? 'Handshaking...' : 'Call Peer'}
+                        </button>
+                      </>
                     )}
                   </div>
                 </div>

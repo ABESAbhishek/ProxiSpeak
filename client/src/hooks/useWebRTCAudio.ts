@@ -29,6 +29,7 @@ export interface UseWebRTCAudioResult {
   signalingLogs: SignalingLogEntry[];
   clearLogs: () => void;
   startCall: (peerId: string) => Promise<void>;
+  restartIce: (peerId: string) => Promise<boolean>;
   closeCall: (peerId: string) => void;
   setPeerVolume: (peerId: string, volume: number) => void;
   setPeerSpatial: (peerId: string, volume: number, pan?: number, cutoffHz?: number) => void;
@@ -480,6 +481,14 @@ export function useWebRTCAudio(
       targetId?: string;
     }) => {
       addLog('in', 'webrtc:error', payload.message, payload);
+      if (payload.targetId) {
+        const targetId = payload.targetId;
+        const peer = peers[targetId];
+        if (peer && (peer.connectionState === 'failed' || peer.connectionState === 'disconnected')) {
+          console.warn(`[WebRTC] Initiating ICE restart for peer ${targetId} following error notification`);
+          void webrtcManagerRef.current?.restartIce(targetId);
+        }
+      }
     };
 
     const handleServerError = (payload: { message?: string }) => {
@@ -630,9 +639,34 @@ export function useWebRTCAudio(
     }
   }, []);
 
+  const restartIce = useCallback(async (peerId: string): Promise<boolean> => {
+    if (webrtcManagerRef.current) {
+      return await webrtcManagerRef.current.restartIce(peerId);
+    }
+    return false;
+  }, []);
+
   const closeCall = useCallback((peerId: string) => {
     webrtcManagerRef.current?.closePeer(peerId);
   }, []);
+
+  // Handle network reconnection recovery
+  useEffect(() => {
+    const handleOnline = () => {
+      addLog('in', 'user:join', 'Network reconnected. Verifying peer connections...');
+      Object.values(peers).forEach((peer) => {
+        if (peer.connectionState === 'failed' || peer.connectionState === 'disconnected') {
+          addLog('out', 'webrtc:offer', `Auto-recovering disconnected peer ${peer.peerId}`);
+          void webrtcManagerRef.current?.restartIce(peer.peerId);
+        }
+      });
+    };
+
+    window.addEventListener('online', handleOnline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+    };
+  }, [addLog, peers]);
 
   const setPeerVolume = useCallback((peerId: string, volume: number) => {
     const safeVolume = Math.max(0, Math.min(1, volume));
@@ -734,6 +768,7 @@ export function useWebRTCAudio(
     signalingLogs,
     clearLogs,
     startCall,
+    restartIce,
     closeCall,
     setPeerVolume,
     setPeerSpatial,
