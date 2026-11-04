@@ -43,6 +43,7 @@ export class WebRTCManager {
   private retryTimeouts: Map<string, number> = new Map();
   private retryAttempts: Map<string, number> = new Map();
   private isRestartingIce: Map<string, boolean> = new Map();
+  private peerSpatialParams: Map<string, { volume: number; pan: number; cutoffHz?: number; smoothing?: number }> = new Map();
 
   private readonly MAX_ICE_RETRIES = 3;
   private readonly DISCONNECT_GRACE_PERIOD_MS = 4000;
@@ -124,8 +125,9 @@ export class WebRTCManager {
         this.remoteStreams.set(peerId, stream);
       }
       stream.addTrack(event.track);
-      // Connect to Web Audio API spatial panner graph
-      this.spatialAudio.attachStream(peerId, stream);
+      // Connect to Web Audio API spatial panner graph with initial spatial parameters if already known
+      const initialSpatial = this.peerSpatialParams.get(peerId);
+      this.spatialAudio.attachStream(peerId, stream, initialSpatial);
       this.callbacks.onRemoteStream(peerId, stream);
     };
 
@@ -408,15 +410,24 @@ export class WebRTCManager {
     peerId: string,
     volume: number,
     pan: number = 0,
-    cutoffHz?: number
+    cutoffHz?: number,
+    smoothing: number = DEFAULT_GAIN_SMOOTHING
   ): void {
+    this.peerSpatialParams.set(peerId, { volume, pan, cutoffHz, smoothing });
     this.spatialAudio.updateSpatialParameters(
       peerId,
       volume,
       pan,
-      DEFAULT_GAIN_SMOOTHING,
+      smoothing,
       cutoffHz
     );
+  }
+
+  /**
+   * Returns current cached spatial parameters for a peer.
+   */
+  public getPeerSpatial(peerId: string): { volume: number; pan: number; cutoffHz?: number } | undefined {
+    return this.peerSpatialParams.get(peerId);
   }
 
   /**
@@ -725,6 +736,7 @@ export class WebRTCManager {
     this.remoteStreams.delete(peerId);
     this.prevBytesReceived.delete(peerId);
     this.queuedCandidates.delete(peerId);
+    this.peerSpatialParams.delete(peerId);
     this.callbacks.onConnectionStateChange(peerId, 'closed');
     console.log(`[WebRTC] Cleaned up peer connection and audio resources for ${peerId}`);
   }
@@ -743,6 +755,7 @@ export class WebRTCManager {
     this.retryTimeouts.clear();
     this.retryAttempts.clear();
     this.isRestartingIce.clear();
+    this.peerSpatialParams.clear();
     this.localStream = null;
   }
 }

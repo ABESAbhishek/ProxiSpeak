@@ -111,9 +111,10 @@ export const App: React.FC = () => {
     setPeerVolume,
     setPeerSpatial,
     updateLocalPosition,
+    updateLocalHeading,
     switchRoom,
     setAudioOutputDevice,
-  } = useWebRTCAudio(localStream, isSpeaking, isMuted, localPosition, displayName, Boolean(displayName));
+  } = useWebRTCAudio(localStream, isSpeaking, isMuted, localPosition, displayName, Boolean(displayName), localHeadingRad);
 
   useEffect(() => {
     let alive = true;
@@ -587,7 +588,7 @@ export const App: React.FC = () => {
                         displayName={displayName}
                         avatarUrl={account.avatarUrl}
                         onMove={reportLocalPosition}
-                        onHeadingChange={setLocalHeadingRad}
+                        onHeadingChange={(rad) => { setLocalHeadingRad(rad); updateLocalHeading(rad); }}
                         peers={peerList}
                         isLocationTracking={location.enabled}
                         theme={theme}

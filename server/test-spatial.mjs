@@ -45,6 +45,11 @@ function calculateAttenuation(distance, config = { minDistance: 30, maxDistance:
       const factor = Math.exp(-rolloffFactor * 3 * normalized);
       return Math.max(0, Math.min(1, factor));
     }
+    case 'smoothstep': {
+      const t = (distance - minDistance) / (maxDistance - minDistance);
+      const factor = 1 - (t * t * (3 - 2 * t));
+      return Math.max(0, Math.min(1, factor));
+    }
     default:
       return 1.0;
   }
@@ -74,12 +79,21 @@ const expVal = calculateAttenuation(100, { minDistance: 30, maxDistance: 260, ro
 assert(expVal > 0 && expVal < 1, 'Exponential falloff must produce fractional volume');
 console.log(`[PASS] Exponential decay at distance 100 = ${Math.round(expVal * 100) / 100}`);
 
+// Smoothstep S-curve falloff
+const smoothMid = calculateAttenuation(midDist, { minDistance: 30, maxDistance: 260, rolloffFactor: 1.0, model: 'smoothstep' });
+assert.strictEqual(Math.round(smoothMid * 100) / 100, 0.5, 'Smoothstep midpoint must equal 0.5');
+const smoothNearMin = calculateAttenuation(30 + 0.1 * 230, { minDistance: 30, maxDistance: 260, rolloffFactor: 1.0, model: 'smoothstep' });
+assert(smoothNearMin > 0.95 && smoothNearMin < 1.0, 'Smoothstep near min boundary must maintain smooth zero derivative');
+console.log(`[PASS] Smoothstep S-curve falloff verified: Midpoint = ${smoothMid}, Near-boundary = ${Math.round(smoothNearMin * 1000) / 1000}`);
+
 // 3. Stereo Panning and Azimuth Angle
 function calculateStereoPanAndAzimuth(listenerPos, listenerHeadingRad, sourcePos) {
   const dx = sourcePos.x - listenerPos.x;
   const dy = sourcePos.y - listenerPos.y;
+  const dz = (sourcePos.z ?? 0) - (listenerPos.z ?? 0);
   if (Math.abs(dx) < 0.001 && Math.abs(dy) < 0.001) {
-    return { pan: 0, azimuthDeg: 0 };
+    const elevationDeg = dz > 0 ? 90 : dz < 0 ? -90 : 0;
+    return { pan: 0, azimuthDeg: 0, elevationDeg };
   }
   const angleToSource = Math.atan2(dx, -dy);
   let relativeAngle = angleToSource - listenerHeadingRad;
@@ -87,7 +101,9 @@ function calculateStereoPanAndAzimuth(listenerPos, listenerHeadingRad, sourcePos
   while (relativeAngle < -Math.PI) relativeAngle += 2 * Math.PI;
   const azimuthDeg = Math.round((relativeAngle * 180) / Math.PI);
   const pan = Math.max(-1, Math.min(1, Math.sin(relativeAngle)));
-  return { pan, azimuthDeg };
+  const horizontalDist = Math.hypot(dx, dy);
+  const elevationDeg = Math.round((Math.atan2(dz, horizontalDist) * 180) / Math.PI);
+  return { pan, azimuthDeg, elevationDeg };
 }
 
 const listener = { x: 100, y: 100 };
@@ -109,6 +125,15 @@ const left = calculateStereoPanAndAzimuth(listener, 0, { x: 50, y: 100 });
 assert.strictEqual(left.azimuthDeg, -90);
 assert.strictEqual(Math.round(left.pan * 100) / 100, -1);
 console.log(`[PASS] Direction to the left: Azimuth = ${left.azimuthDeg}deg, Pan = ${left.pan} (Full Left)`);
+
+// Elevation tests
+const above = calculateStereoPanAndAzimuth({ x: 0, y: 0, z: 0 }, 0, { x: 0, y: 0, z: 50 });
+assert.strictEqual(above.elevationDeg, 90, 'Source directly above must have 90deg elevation');
+const below = calculateStereoPanAndAzimuth({ x: 0, y: 0, z: 0 }, 0, { x: 0, y: 0, z: -50 });
+assert.strictEqual(below.elevationDeg, -90, 'Source directly below must have -90deg elevation');
+const angle45 = calculateStereoPanAndAzimuth({ x: 0, y: 0, z: 0 }, 0, { x: 100, y: 0, z: 100 });
+assert.strictEqual(angle45.elevationDeg, 45, 'Equal horizontal and vertical distance must produce 45deg elevation');
+console.log(`[PASS] 3D Elevation angles verified: Above = ${above.elevationDeg}deg, Below = ${below.elevationDeg}deg, 45-deg angle = ${angle45.elevationDeg}deg`);
 
 // 4. Acoustic Distance Low-Pass Frequency Cutoff
 function calculateAcousticCutoffFrequency(distance, maxDistance = 260) {

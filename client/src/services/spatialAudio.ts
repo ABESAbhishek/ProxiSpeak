@@ -7,7 +7,7 @@
 
 import type { Position3D } from '../types';
 
-export type AttenuationModel = 'linear' | 'inverse' | 'exponential';
+export type AttenuationModel = 'linear' | 'inverse' | 'exponential' | 'smoothstep';
 
 // Safe audio gain and transition limits
 export const MIN_AUDIO_GAIN = 0;
@@ -155,6 +155,7 @@ export interface SpatialAudioResult {
   volume: number;            // Normalized volume 0.0 to 1.0
   pan: number;               // Stereo pan -1.0 (left) to 1.0 (right)
   azimuthDeg: number;        // Angle relative to listener facing direction (-180 to 180)
+  elevationDeg?: number;     // Vertical angle relative to listener horizon (-90 to 90)
   cutoffFrequencyHz: number; // Acoustic low-pass frequency cutoff (Hz)
 }
 
@@ -228,6 +229,13 @@ export function calculateAttenuation(
       return Math.max(0, Math.min(1, factor));
     }
 
+    case 'smoothstep': {
+      // Perceptually smooth Hermite S-curve (zero derivative at boundaries, eliminates clicks)
+      const t = (distance - minDistance) / (maxDistance - minDistance);
+      const factor = 1 - (t * t * (3 - 2 * t));
+      return Math.max(0, Math.min(1, factor));
+    }
+
     default:
       return 1.0;
   }
@@ -244,12 +252,14 @@ export function calculateStereoPanAndAzimuth(
   listenerPos: Position3D,
   listenerHeadingRad: number,
   sourcePos: Position3D
-): { pan: number; azimuthDeg: number } {
+): { pan: number; azimuthDeg: number; elevationDeg: number } {
   const dx = sourcePos.x - listenerPos.x;
   const dy = sourcePos.y - listenerPos.y;
+  const dz = (sourcePos.z ?? 0) - (listenerPos.z ?? 0);
 
   if (Math.abs(dx) < 0.001 && Math.abs(dy) < 0.001) {
-    return { pan: 0, azimuthDeg: 0 };
+    const elevationDeg = dz > 0 ? 90 : dz < 0 ? -90 : 0;
+    return { pan: 0, azimuthDeg: 0, elevationDeg };
   }
 
   // World angle to sound source (radians)
@@ -266,7 +276,11 @@ export function calculateStereoPanAndAzimuth(
   // (-1.0 = 90 deg to left, +1.0 = 90 deg to right, 0.0 = directly in front or behind)
   const pan = Math.max(-1, Math.min(1, Math.sin(relativeAngle)));
 
-  return { pan, azimuthDeg };
+  // Vertical elevation angle from horizontal plane
+  const horizontalDist = Math.hypot(dx, dy);
+  const elevationDeg = Math.round((Math.atan2(dz, horizontalDist) * 180) / Math.PI);
+
+  return { pan, azimuthDeg, elevationDeg };
 }
 
 /**
@@ -280,7 +294,7 @@ export function computeSpatialAudio(
 ): SpatialAudioResult {
   const distance = calculate3DDistance(listenerPos, sourcePos);
   const volume = calculateAttenuation(distance, config);
-  const { pan, azimuthDeg } = calculateStereoPanAndAzimuth(listenerPos, listenerHeadingRad, sourcePos);
+  const { pan, azimuthDeg, elevationDeg } = calculateStereoPanAndAzimuth(listenerPos, listenerHeadingRad, sourcePos);
   const cutoffFrequencyHz = calculateAcousticCutoffFrequency(distance, config.maxDistance);
 
   return {
@@ -288,6 +302,7 @@ export function computeSpatialAudio(
     volume: Math.round(volume * 100) / 100,
     pan: Math.round(pan * 100) / 100,
     azimuthDeg,
+    elevationDeg,
     cutoffFrequencyHz
   };
 }
@@ -360,30 +375,43 @@ export class SpatialAudioGraph {
    * Connects a remote MediaStream to Web Audio API processing chain:
    * MediaStreamSource -> BiquadFilterNode -> GainNode -> StereoPannerNode -> Destination
    */
-  public attachStream(peerId: string, stream: MediaStream): void {
+  public attachStream(
+    peerId: string,
+    stream: MediaStream,
+    initialParams?: { volume?: number; pan?: number; cutoffHz?: number }
+  ): void {
     try {
       const ctx = this.getAudioContext();
       this.detachStream(peerId);
 
       const source = ctx.createMediaStreamSource(stream);
 
+      const initCutoff = typeof initialParams?.cutoffHz === 'number'
+        ? Math.max(400, Math.min(20000, initialParams.cutoffHz))
+        : 20000;
+
       let filter: BiquadFilterNode | null = null;
       if (typeof ctx.createBiquadFilter === 'function') {
         filter = ctx.createBiquadFilter();
         filter.type = 'lowpass';
-        filter.frequency.setValueAtTime(20000, ctx.currentTime);
+        filter.frequency.setValueAtTime(initCutoff, ctx.currentTime);
       }
 
+      const initVol = typeof initialParams?.volume === 'number'
+        ? clampGain(initialParams.volume)
+        : MAX_AUDIO_GAIN;
+
       const gain = ctx.createGain();
-      gain.gain.setValueAtTime(
-        MAX_AUDIO_GAIN,
-        ctx.currentTime
-      );
+      gain.gain.setValueAtTime(initVol, ctx.currentTime);
+
+      const initPan = typeof initialParams?.pan === 'number'
+        ? clampPan(initialParams.pan)
+        : 0;
 
       let panner: StereoPannerNode | null = null;
       if (typeof ctx.createStereoPanner === 'function') {
         panner = ctx.createStereoPanner();
-        panner.pan.setValueAtTime(0, ctx.currentTime);
+        panner.pan.setValueAtTime(initPan, ctx.currentTime);
 
         if (filter) {
           source.connect(filter);
@@ -404,7 +432,7 @@ export class SpatialAudioGraph {
       }
 
       this.peerNodes.set(peerId, { source, gain, panner, filter });
-      console.log(`[SpatialAudio] Attached Web Audio graph for peer ${peerId}`);
+      console.log(`[SpatialAudio] Attached Web Audio graph for peer ${peerId} (initVol: ${initVol}, initPan: ${initPan})`);
     } catch (err) {
       console.warn(`[SpatialAudio] Could not attach Web Audio graph for ${peerId}:`, err);
     }
@@ -436,11 +464,22 @@ export class SpatialAudioGraph {
       gainParam.cancelScheduledValues(currentTime);
     }
 
-    gainParam.setTargetAtTime(
-      clampedVolume,
-      currentTime,
-      safeSmoothing
-    );
+    if (clampedVolume <= 0.0001) {
+      // Graceful exponential fade to true digital silence: ramp down exponentially then clamp to 0
+      // to avoid denormal float CPU spikes and low-level quantization noise
+      gainParam.setTargetAtTime(0.0001, currentTime, safeSmoothing);
+      gainParam.setValueAtTime(0, currentTime + safeSmoothing * 3);
+    } else {
+      // If ramping up from true zero, set tiny non-zero base to avoid WebKit zero-multiplier stall
+      if (gainParam.value <= 0.00001) {
+        gainParam.setValueAtTime(0.0001, currentTime);
+      }
+      gainParam.setTargetAtTime(
+        clampedVolume,
+        currentTime,
+        safeSmoothing
+      );
+    }
 
     if (nodes.panner) {
       const panParam = nodes.panner.pan;
@@ -460,7 +499,16 @@ export class SpatialAudioGraph {
 
     if (nodes.filter && typeof cutoffHz === 'number') {
       const clampedFreq = Math.max(400, Math.min(20000, cutoffHz));
-      nodes.filter.frequency.setTargetAtTime(clampedFreq, currentTime, 0.05);
+      const filterParam = nodes.filter.frequency;
+
+      if (typeof filterParam.cancelAndHoldAtTime === 'function') {
+        filterParam.cancelAndHoldAtTime(currentTime);
+      } else {
+        filterParam.cancelScheduledValues(currentTime);
+      }
+
+      // Smooth logarithmic lowpass sweep with 0.06s time constant
+      filterParam.setTargetAtTime(clampedFreq, currentTime, 0.06);
     }
   }
 

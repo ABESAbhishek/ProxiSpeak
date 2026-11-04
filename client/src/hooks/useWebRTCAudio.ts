@@ -32,8 +32,10 @@ export interface UseWebRTCAudioResult {
   restartIce: (peerId: string) => Promise<boolean>;
   closeCall: (peerId: string) => void;
   setPeerVolume: (peerId: string, volume: number) => void;
-  setPeerSpatial: (peerId: string, volume: number, pan?: number, cutoffHz?: number) => void;
+  setPeerSpatial: (peerId: string, volume: number, pan?: number, cutoffHz?: number, smoothing?: number) => void;
   updateLocalPosition: (position: Position3D) => void;
+  updateLocalHeading: (headingRad: number) => void;
+  localHeadingRad: number;
   switchRoom: (roomId: string) => void;
   setAudioOutputDevice: (sinkId: string) => Promise<void>;
 }
@@ -44,7 +46,8 @@ export function useWebRTCAudio(
   isMuted: boolean = false,
   initialPosition: Position3D = { x: 500, y: 280, z: 0 },
   displayName = '',
-  joinEnabled = false
+  joinEnabled = false,
+  initialHeadingRad: number = 0
 ): UseWebRTCAudioResult {
   const [localSocketId, setLocalSocketId] = useState<string | null>(
     socket.id || null
@@ -60,6 +63,7 @@ export function useWebRTCAudio(
   const [peers, setPeers] = useState<Record<string, RemotePeerAudio>>({});
   const [localPosition, setLocalPosition] =
     useState<Position3D>(initialPosition);
+  const [localHeadingRad, setLocalHeadingRad] = useState<number>(initialHeadingRad);
   const [signalingLogs, setSignalingLogs] = useState<SignalingLogEntry[]>([]);
 
   const webrtcManagerRef = useRef<WebRTCManager | null>(null);
@@ -581,7 +585,7 @@ export function useWebRTCAudio(
 
       const spatial = evaluateOccludedSpatialAudio(
         localPosition,
-        0,
+        localHeadingRad,
         peer.position,
         {
           preset: localZone.preset,
@@ -631,7 +635,7 @@ export function useWebRTCAudio(
 
       return changed ? next : previous;
     });
-  }, [peers, localPosition]);
+  }, [peers, localPosition, localHeadingRad]);
 
   const startCall = useCallback(async (peerId: string) => {
     if (webrtcManagerRef.current) {
@@ -688,7 +692,7 @@ export function useWebRTCAudio(
   }, []);
 
   const setPeerSpatial = useCallback(
-    (peerId: string, volume: number, pan: number = 0, cutoffHz?: number) => {
+    (peerId: string, volume: number, pan: number = 0, cutoffHz?: number, smoothing?: number) => {
       const safeVolume = Math.max(0, Math.min(1, volume));
       const safePan = Math.max(-1, Math.min(1, pan));
 
@@ -696,7 +700,8 @@ export function useWebRTCAudio(
         peerId,
         safeVolume,
         safePan,
-        cutoffHz
+        cutoffHz,
+        smoothing
       );
 
       setPeers((prev) => {
@@ -716,6 +721,10 @@ export function useWebRTCAudio(
     },
     []
   );
+
+  const updateLocalHeading = useCallback((headingRad: number) => {
+    setLocalHeadingRad(headingRad);
+  }, []);
 
   const updateLocalPosition = useCallback(
     (position: Position3D) => {
@@ -773,6 +782,8 @@ export function useWebRTCAudio(
     setPeerVolume,
     setPeerSpatial,
     updateLocalPosition,
+    updateLocalHeading,
+    localHeadingRad,
     switchRoom,
     setAudioOutputDevice
   };
