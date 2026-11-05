@@ -36,6 +36,8 @@ export interface UseWebRTCAudioResult {
   updateLocalPosition: (position: Position3D) => void;
   updateLocalHeading: (headingRad: number) => void;
   localHeadingRad: number;
+  culledPeerCount: number;
+  activeStreamCount: number;
   switchRoom: (roomId: string) => void;
   setAudioOutputDevice: (sinkId: string) => Promise<void>;
 }
@@ -64,6 +66,8 @@ export function useWebRTCAudio(
   const [localPosition, setLocalPosition] =
     useState<Position3D>(initialPosition);
   const [localHeadingRad, setLocalHeadingRad] = useState<number>(initialHeadingRad);
+  const [culledPeerCount, setCulledPeerCount] = useState<number>(0);
+  const [activeStreamCount, setActiveStreamCount] = useState<number>(0);
   const [signalingLogs, setSignalingLogs] = useState<SignalingLogEntry[]>([]);
 
   const webrtcManagerRef = useRef<WebRTCManager | null>(null);
@@ -569,12 +573,23 @@ export function useWebRTCAudio(
   }, [isConnected]);
 
   // Automatically calculate and apply each remote user's audio gain
-  // whenever local or remote positions change.
+  // and manage WebRTC mesh spatial culling whenever positions change.
   useEffect(() => {
-    const spatialUpdates: Record<
-      string,
-      { volume: number; pan: number; cutoffHz?: number }
-    > = {};
+    const MAX_AUDIBLE_MESH_STREAMS = 6;
+    const CULLING_DISTANCE_THRESHOLD = 285; // Distance to suspend audio decoding (with hysteresis)
+    const CULLING_RECOVERY_THRESHOLD = 260; // Distance to resume audio decoding
+
+    interface PeerSpatialCandidate {
+      peerId: string;
+      distance: number;
+      isSpeaking: boolean;
+      volume: number;
+      pan: number;
+      cutoffHz: number;
+      wasCulled: boolean;
+    }
+
+    const candidates: PeerSpatialCandidate[] = [];
 
     Object.values(peers).forEach((peer) => {
       if (!peer.position) return;
@@ -597,17 +612,97 @@ export function useWebRTCAudio(
       const volume = Math.max(0, Math.min(1, spatial.volume));
       const pan = Math.max(-1, Math.min(1, spatial.pan));
       const cutoffHz = spatial.cutoffFrequencyHz;
+      const distance = spatial.distance;
+      const wasCulled = Boolean(peer.isCulled);
 
-      spatialUpdates[peer.peerId] = { volume, pan, cutoffHz };
-
-      // Apply gain, pan, and low-pass cutoff through the manager's remote-audio path.
-      webrtcManagerRef.current?.setPeerSpatial(
-        peer.peerId,
+      candidates.push({
+        peerId: peer.peerId,
+        distance,
+        isSpeaking: Boolean(peer.isSpeaking),
         volume,
         pan,
-        cutoffHz
-      );
+        cutoffHz,
+        wasCulled
+      });
     });
+
+    // 1. Identify candidates that must be culled due to distance / occlusion
+    const outOfRangeSet = new Set<string>();
+    candidates.forEach((cand) => {
+      // Hysteresis: if already culled, require entering <= 260; if active, allow until > 285
+      const isOutOfRange = cand.wasCulled
+        ? cand.distance > CULLING_RECOVERY_THRESHOLD
+        : cand.distance > CULLING_DISTANCE_THRESHOLD;
+
+      if (isOutOfRange || cand.volume <= 0.0001) {
+        outOfRangeSet.add(cand.peerId);
+      }
+    });
+
+    // 2. For remaining audible candidates, apply mesh concurrency limit
+    const inRangeCandidates = candidates.filter((c) => !outOfRangeSet.has(c.peerId));
+    inRangeCandidates.sort((a, b) => {
+      // Prioritize active speakers
+      if (a.isSpeaking !== b.isSpeaking) {
+        return a.isSpeaking ? -1 : 1;
+      }
+      // Then prioritize closer distance
+      return a.distance - b.distance;
+    });
+
+    const activeSet = new Set<string>();
+    inRangeCandidates.slice(0, MAX_AUDIBLE_MESH_STREAMS).forEach((c) => {
+      activeSet.add(c.peerId);
+    });
+
+    const spatialUpdates: Record<
+      string,
+      {
+        volume: number;
+        pan: number;
+        cutoffHz: number;
+        isCulled: boolean;
+        cullReason?: 'out-of-range' | 'mesh-limit' | 'occluded-silent';
+      }
+    > = {};
+
+    let culledCount = 0;
+    let activeCount = 0;
+
+    // 3. Dispatch spatial audio parameters and track culling to WebRTCManager
+    candidates.forEach((cand) => {
+      const isCulled = !activeSet.has(cand.peerId);
+      const cullReason = outOfRangeSet.has(cand.peerId)
+        ? (cand.volume <= 0.0001 && cand.distance <= CULLING_RECOVERY_THRESHOLD ? 'occluded-silent' : 'out-of-range')
+        : (isCulled ? 'mesh-limit' : undefined);
+
+      if (isCulled) {
+        culledCount++;
+      } else {
+        activeCount++;
+      }
+
+      spatialUpdates[cand.peerId] = {
+        volume: isCulled ? 0 : cand.volume,
+        pan: cand.pan,
+        cutoffHz: cand.cutoffHz,
+        isCulled,
+        cullReason
+      };
+
+      webrtcManagerRef.current?.setPeerCulled(cand.peerId, isCulled);
+      if (!isCulled) {
+        webrtcManagerRef.current?.setPeerSpatial(
+          cand.peerId,
+          cand.volume,
+          cand.pan,
+          cand.cutoffHz
+        );
+      }
+    });
+
+    setCulledPeerCount(culledCount);
+    setActiveStreamCount(activeCount);
 
     setPeers((previous) => {
       let changed = false;
@@ -620,13 +715,17 @@ export function useWebRTCAudio(
         if (
           Math.abs((existing.volume ?? 1) - spatial.volume) > 0.01 ||
           Math.abs((existing.pan ?? 0) - spatial.pan) > 0.01 ||
-          (spatial.cutoffHz && Math.abs((existing.cutoffFrequencyHz ?? 20000) - spatial.cutoffHz) > 50)
+          (spatial.cutoffHz && Math.abs((existing.cutoffFrequencyHz ?? 20000) - spatial.cutoffHz) > 50) ||
+          existing.isCulled !== spatial.isCulled ||
+          existing.cullReason !== spatial.cullReason
         ) {
           next[peerId] = {
             ...existing,
             volume: spatial.volume,
             pan: spatial.pan,
-            cutoffFrequencyHz: spatial.cutoffHz ?? existing.cutoffFrequencyHz
+            cutoffFrequencyHz: spatial.cutoffHz ?? existing.cutoffFrequencyHz,
+            isCulled: spatial.isCulled,
+            cullReason: spatial.cullReason
           };
 
           changed = true;
@@ -784,6 +883,8 @@ export function useWebRTCAudio(
     updateLocalPosition,
     updateLocalHeading,
     localHeadingRad,
+    culledPeerCount,
+    activeStreamCount,
     switchRoom,
     setAudioOutputDevice
   };

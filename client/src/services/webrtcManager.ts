@@ -44,6 +44,7 @@ export class WebRTCManager {
   private retryAttempts: Map<string, number> = new Map();
   private isRestartingIce: Map<string, boolean> = new Map();
   private peerSpatialParams: Map<string, { volume: number; pan: number; cutoffHz?: number; smoothing?: number }> = new Map();
+  private culledPeers: Set<string> = new Set();
 
   private readonly MAX_ICE_RETRIES = 3;
   private readonly DISCONNECT_GRACE_PERIOD_MS = 4000;
@@ -125,6 +126,12 @@ export class WebRTCManager {
         this.remoteStreams.set(peerId, stream);
       }
       stream.addTrack(event.track);
+
+      // Respect mesh culling state: disable track decoding if peer is currently culled
+      if (this.culledPeers.has(peerId)) {
+        event.track.enabled = false;
+      }
+
       // Connect to Web Audio API spatial panner graph with initial spatial parameters if already known
       const initialSpatial = this.peerSpatialParams.get(peerId);
       this.spatialAudio.attachStream(peerId, stream, initialSpatial);
@@ -428,6 +435,40 @@ export class WebRTCManager {
    */
   public getPeerSpatial(peerId: string): { volume: number; pan: number; cutoffHz?: number } | undefined {
     return this.peerSpatialParams.get(peerId);
+  }
+
+  /**
+   * Dynamically enables or pauses remote peer audio track decoding based on spatial proximity.
+   * Optimizes WebRTC mesh performance by eliminating unnecessary audio decoding when outside audible range.
+   */
+  public setPeerCulled(peerId: string, culled: boolean): void {
+    if (culled) {
+      this.culledPeers.add(peerId);
+    } else {
+      this.culledPeers.delete(peerId);
+    }
+
+    const stream = this.remoteStreams.get(peerId);
+    if (stream) {
+      stream.getAudioTracks().forEach((track) => {
+        if (track.enabled === culled) {
+          track.enabled = !culled;
+        }
+      });
+    }
+
+    // When culled, smoothly attenuate volume to zero in the spatial audio graph
+    if (culled) {
+      this.spatialAudio.updateSpatialParameters(peerId, 0, 0, 0.04);
+    }
+  }
+
+  public isPeerCulled(peerId: string): boolean {
+    return this.culledPeers.has(peerId);
+  }
+
+  public getCulledPeerCount(): number {
+    return this.culledPeers.size;
   }
 
   /**
@@ -737,6 +778,7 @@ export class WebRTCManager {
     this.prevBytesReceived.delete(peerId);
     this.queuedCandidates.delete(peerId);
     this.peerSpatialParams.delete(peerId);
+    this.culledPeers.delete(peerId);
     this.callbacks.onConnectionStateChange(peerId, 'closed');
     console.log(`[WebRTC] Cleaned up peer connection and audio resources for ${peerId}`);
   }
@@ -756,6 +798,7 @@ export class WebRTCManager {
     this.retryAttempts.clear();
     this.isRestartingIce.clear();
     this.peerSpatialParams.clear();
+    this.culledPeers.clear();
     this.localStream = null;
   }
 }

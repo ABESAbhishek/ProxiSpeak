@@ -112,6 +112,8 @@ export const App: React.FC = () => {
     setPeerSpatial,
     updateLocalPosition,
     updateLocalHeading,
+    culledPeerCount,
+    activeStreamCount,
     switchRoom,
     setAudioOutputDevice,
   } = useWebRTCAudio(localStream, isSpeaking, isMuted, localPosition, displayName, Boolean(displayName), localHeadingRad);
@@ -863,6 +865,8 @@ export const App: React.FC = () => {
                       onSetVolume={setManualPeerVolume}
                       onSwitchRoom={switchRoom}
                       localPosition={localPosition}
+                      culledPeerCount={culledPeerCount}
+                      activeStreamCount={activeStreamCount}
                     />
                   </div>
 

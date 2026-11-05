@@ -126,6 +126,10 @@ export interface RemotePeerAudio {
   isSpeaking?: boolean;
   position?: Position3D;
   stats?: PeerAudioStats;
+  /** Whether stream decoding is culled to optimize WebRTC mesh performance */
+  isCulled?: boolean;
+  /** Reason for stream culling: distance boundary or concurrent speaker limit */
+  cullReason?: 'out-of-range' | 'mesh-limit' | 'occluded-silent';
 }
 
 export interface PeerAudioStats {

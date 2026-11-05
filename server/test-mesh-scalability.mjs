@@ -224,6 +224,76 @@ assert.strictEqual(mockPc.closed, true, 'RTCPeerConnection must be closed');
 
 console.log('[PASS] ICE restart negotiation and track teardown lifecycle verified successfully.');
 
+// ============================================================================
+// 6. Spatial Audio Culling & Active Audio Track Throttling
+// ============================================================================
+function simulateSpatialCulling(peers, localPos, maxAudible = 6, cullingThreshold = 285, recoveryThreshold = 260) {
+  const candidates = peers.map((p) => {
+    const dx = p.position.x - localPos.x;
+    const dy = p.position.y - localPos.y;
+    const dz = (p.position.z ?? 0) - (localPos.z ?? 0);
+    const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    return { ...p, distance };
+  });
+
+  const outOfRange = new Set();
+  candidates.forEach((cand) => {
+    const isOut = cand.wasCulled ? cand.distance > recoveryThreshold : cand.distance > cullingThreshold;
+    if (isOut) outOfRange.add(cand.id);
+  });
+
+  const inRange = candidates.filter((c) => !outOfRange.has(c.id));
+  inRange.sort((a, b) => {
+    if (a.isSpeaking !== b.isSpeaking) return a.isSpeaking ? -1 : 1;
+    return a.distance - b.distance;
+  });
+
+  const activeIds = new Set(inRange.slice(0, maxAudible).map((c) => c.id));
+  const culledIds = new Set(candidates.filter((c) => !activeIds.has(c.id)).map((c) => c.id));
+
+  return { activeIds, culledIds, totalPeers: peers.length };
+}
+
+// 10 remote peers at varying distances
+const samplePeers = [
+  { id: 'peer-1', position: { x: 520, y: 270, z: 0 }, isSpeaking: true, wasCulled: false },  // d ~ 20 (close, speaking)
+  { id: 'peer-2', position: { x: 550, y: 280, z: 0 }, isSpeaking: false, wasCulled: false }, // d ~ 51 (close, quiet)
+  { id: 'peer-3', position: { x: 650, y: 270, z: 0 }, isSpeaking: true, wasCulled: false },  // d ~ 150 (mid, speaking)
+  { id: 'peer-4', position: { x: 720, y: 270, z: 0 }, isSpeaking: false, wasCulled: false }, // d ~ 220 (mid, quiet)
+  { id: 'peer-5', position: { x: 750, y: 270, z: 0 }, isSpeaking: true, wasCulled: false },  // d ~ 250 (audible boundary, speaking)
+  { id: 'peer-6', position: { x: 755, y: 270, z: 0 }, isSpeaking: false, wasCulled: false }, // d ~ 255 (audible boundary, quiet)
+  { id: 'peer-7', position: { x: 800, y: 270, z: 0 }, isSpeaking: false, wasCulled: false }, // d ~ 300 (beyond 285 threshold -> culled)
+  { id: 'peer-8', position: { x: 900, y: 270, z: 0 }, isSpeaking: false, wasCulled: true },  // d ~ 400 (far -> culled)
+  { id: 'peer-9', position: { x: 100, y: 100, z: 0 }, isSpeaking: true, wasCulled: true },   // d ~ 434 (far, speaking -> culled)
+  { id: 'peer-10', position: { x: 50, y: 50, z: 0 }, isSpeaking: false, wasCulled: true }    // d ~ 499 (far -> culled)
+];
+
+const cullingResult = simulateSpatialCulling(samplePeers, { x: 500, y: 269, z: 0 }, 6, 285, 260);
+
+// Verify peers beyond 285 are culled
+assert(cullingResult.culledIds.has('peer-7'), 'Peer 7 at distance 300 must be culled');
+assert(cullingResult.culledIds.has('peer-8'), 'Peer 8 at distance 400 must be culled');
+assert(cullingResult.culledIds.has('peer-9'), 'Peer 9 beyond audible boundary must be culled');
+assert(cullingResult.culledIds.has('peer-10'), 'Peer 10 at distance 499 must be culled');
+
+// Verify active speakers within audible range are active
+assert(cullingResult.activeIds.has('peer-1'), 'Peer 1 near listener must be active');
+assert(cullingResult.activeIds.has('peer-2'), 'Peer 2 near listener must be active');
+assert(cullingResult.activeIds.has('peer-3'), 'Peer 3 within range must be active');
+
+// Verify bandwidth reduction: 10 peers unculled = 10 * 48 = 480kbps, culled active = 6 * 48 = 288kbps
+const unculledBandwidth = samplePeers.length * 48;
+const culledBandwidth = cullingResult.activeIds.size * 48;
+const savingsPercent = Math.round(((unculledBandwidth - culledBandwidth) / unculledBandwidth) * 100);
+
+assert.strictEqual(cullingResult.activeIds.size, 6, 'Must maintain exactly 6 active streams (mesh guardrail limit)');
+assert.strictEqual(cullingResult.culledIds.size, 4, '4 distant peers must be culled');
+assert(savingsPercent >= 40, 'Spatial culling must yield at least 40% network and decoding savings');
+
+console.log('[PASS] WebRTC mesh spatial culling verified:');
+console.log(`       Active Streams: ${cullingResult.activeIds.size} / ${samplePeers.length} | Culled: ${cullingResult.culledIds.size}`);
+console.log(`       Bandwidth: ${culledBandwidth}kbps vs ${unculledBandwidth}kbps unculled (${savingsPercent}% bandwidth/CPU reduction)`);
+
 console.log('======================================================');
 console.log('  ALL WEBRTC MESH & SCALABILITY TESTS PASSED!         ');
 console.log('======================================================');

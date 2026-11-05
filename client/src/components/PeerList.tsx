@@ -14,6 +14,8 @@ interface PeerListProps {
   onSetVolume: (peerId: string, volume: number) => void;
   onSwitchRoom: (roomId: string) => void;
   localPosition?: Position3D;
+  culledPeerCount?: number;
+  activeStreamCount?: number;
 }
 
 export const PeerList: React.FC<PeerListProps> = ({
@@ -25,7 +27,9 @@ export const PeerList: React.FC<PeerListProps> = ({
   onRestartIce,
   onSetVolume,
   onSwitchRoom,
-  localPosition
+  localPosition,
+  culledPeerCount,
+  activeStreamCount
 }) => {
   const peerEntries = Object.entries(peers);
 
@@ -68,8 +72,17 @@ export const PeerList: React.FC<PeerListProps> = ({
           </div>
         </div>
 
-        {/* Room Switcher */}
-        <div className="flex items-center gap-2">
+        {/* Room Switcher & Mesh Guardrail Telemetry */}
+        <div className="flex items-center gap-2.5">
+          {typeof activeStreamCount === 'number' && peerEntries.length > 0 && (
+            <span
+              className="px-2 py-0.5 rounded text-[11px] font-mono bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 hidden sm:inline-flex items-center gap-1"
+              title="Spatial mesh audio optimization: decodes nearest speakers and culls distant peers"
+            >
+              <span>⚡ Mesh: {activeStreamCount} Active</span>
+              {culledPeerCount ? <span className="text-violet-300">({culledPeerCount} culled)</span> : null}
+            </span>
+          )}
           <span className="text-[11px] text-slate-400 font-mono hidden sm:inline">Room:</span>
           <select
             value={currentRoomId}
@@ -176,6 +189,18 @@ export const PeerList: React.FC<PeerListProps> = ({
                             <span>🧱 Wall Occlusion</span>
                           </span>
                         )}
+                        {peer.isCulled && (
+                          <span
+                            className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-violet-500/15 text-violet-300 border border-violet-500/30 flex items-center gap-1"
+                            title={
+                              peer.cullReason === 'mesh-limit'
+                                ? 'Mesh guardrail: track decoding paused to prioritize active speakers'
+                                : 'Spatial culling: track decoding paused beyond audible range'
+                            }
+                          >
+                            <span>🔕 Culled ({peer.cullReason === 'mesh-limit' ? 'Mesh Limit' : 'Distant'})</span>
+                          </span>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -239,9 +264,11 @@ export const PeerList: React.FC<PeerListProps> = ({
                 {/* Audio Playback & Week 2 Proximity Volume Slider */}
                 <div className="mt-3 pt-3 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-3 text-xs">
                   <div className="flex items-center gap-2 text-slate-400">
-                    <Volume2 className={`w-4 h-4 ${isConnected ? 'text-emerald-400 animate-pulse' : 'text-slate-600'}`} />
+                    <Volume2 className={`w-4 h-4 ${peer.isCulled ? 'text-violet-400' : isConnected ? 'text-emerald-400 animate-pulse' : 'text-slate-600'}`} />
                     <span>
-                      {isConnected
+                      {peer.isCulled
+                        ? 'Spatial Culled (Bandwidth Optimized)'
+                        : isConnected
                         ? 'Bidirectional Audio Active (Low-latency WebRTC)'
                         : 'Audio Stream Disconnected'}
                     </span>
