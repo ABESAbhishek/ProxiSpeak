@@ -137,8 +137,12 @@ export interface PeerAudioStats {
   rttMs: number;
   jitterMs: number;
   packetsLost: number;
+  packetsReceived?: number;
+  packetLossPercent?: number;
   audioBitrateKbps: number;
   codec: string;
+  mos?: number;
+  qualityRating?: 'excellent' | 'good' | 'fair' | 'poor';
 }
 
 export interface SignalingPingPayload {

@@ -6,6 +6,7 @@ import type {
   PeerAudioStats
 } from '../types';
 import { SpatialAudioGraph, DEFAULT_GAIN_SMOOTHING } from './spatialAudio';
+import { calculateAudioMOS } from './telemetry';
 
 export interface WebRTCManagerCallbacks {
   onSendOffer: (payload: WebRTCOfferPayload) => void;
@@ -39,6 +40,7 @@ export class WebRTCManager {
   private spatialAudio: SpatialAudioGraph = new SpatialAudioGraph();
   private statsInterval: number | null = null;
   private prevBytesReceived: Map<string, { bytes: number; timestamp: number }> = new Map();
+  private prevPacketsData: Map<string, { packetsLost: number; packetsReceived: number }> = new Map();
   private disconnectTimers: Map<string, number> = new Map();
   private retryTimeouts: Map<string, number> = new Map();
   private retryAttempts: Map<string, number> = new Map();
@@ -491,6 +493,9 @@ export class WebRTCManager {
           let audioBitrateKbps = 0;
           let codec = 'opus';
 
+          let packetsReceived = 0;
+          let packetLossPercent = 0;
+
           statsReport.forEach((report) => {
             // Check candidate pair for RTT
             if (report.type === 'candidate-pair' && report.state === 'succeeded') {
@@ -506,6 +511,9 @@ export class WebRTCManager {
               }
               if (report.packetsLost !== undefined) {
                 packetsLost = report.packetsLost;
+              }
+              if (report.packetsReceived !== undefined) {
+                packetsReceived = report.packetsReceived;
               }
 
               if (report.bytesReceived !== undefined) {
@@ -536,13 +544,31 @@ export class WebRTCManager {
             }
           });
 
+          // Calculate instantaneous packet loss percentage
+          const prevPackets = this.prevPacketsData.get(peerId);
+          if (prevPackets) {
+            const deltaLost = Math.max(0, packetsLost - prevPackets.packetsLost);
+            const deltaReceived = Math.max(0, packetsReceived - prevPackets.packetsReceived);
+            const totalDelta = deltaLost + deltaReceived;
+            if (totalDelta > 0) {
+              packetLossPercent = Math.round((deltaLost / totalDelta) * 1000) / 10;
+            }
+          }
+          this.prevPacketsData.set(peerId, { packetsLost, packetsReceived });
+
+          const quality = calculateAudioMOS(rttMs, jitterMs, packetLossPercent);
+
           this.callbacks.onPeerStats(peerId, {
             peerId,
             rttMs,
             jitterMs,
             packetsLost,
+            packetsReceived,
+            packetLossPercent,
             audioBitrateKbps,
-            codec
+            codec,
+            mos: quality.mos,
+            qualityRating: quality.rating
           });
         } catch {
           // ignore transient stats error
@@ -776,6 +802,7 @@ export class WebRTCManager {
 
     this.remoteStreams.delete(peerId);
     this.prevBytesReceived.delete(peerId);
+    this.prevPacketsData.delete(peerId);
     this.queuedCandidates.delete(peerId);
     this.peerSpatialParams.delete(peerId);
     this.culledPeers.delete(peerId);
@@ -798,6 +825,7 @@ export class WebRTCManager {
     this.retryAttempts.clear();
     this.isRestartingIce.clear();
     this.peerSpatialParams.clear();
+    this.prevPacketsData.clear();
     this.culledPeers.clear();
     this.localStream = null;
   }

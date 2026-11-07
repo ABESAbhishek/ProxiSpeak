@@ -49,11 +49,25 @@ export const PeerList: React.FC<PeerListProps> = ({
     }
   };
 
-  const getQualityBadge = (rttMs: number, jitterMs: number) => {
-    if (rttMs < 60 && jitterMs < 20) {
+  const getQualityBadge = (stats: { rttMs: number; jitterMs: number; mos?: number; qualityRating?: 'excellent' | 'good' | 'fair' | 'poor' }) => {
+    if (stats.mos !== undefined) {
+      const mos = stats.mos.toFixed(1);
+      switch (stats.qualityRating) {
+        case 'excellent':
+          return <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-mono">⭐ {mos} Excellent</span>;
+        case 'good':
+          return <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 font-mono">⭐ {mos} Good</span>;
+        case 'fair':
+          return <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 font-mono">⭐ {mos} Fair</span>;
+        case 'poor':
+        default:
+          return <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-300 border border-rose-500/30 font-mono">⭐ {mos} Poor</span>;
+      }
+    }
+    if (stats.rttMs < 60 && stats.jitterMs < 20) {
       return <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">Excellent</span>;
     }
-    if (rttMs < 150) {
+    if (stats.rttMs < 150) {
       return <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/30">Good</span>;
     }
     return <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-400 border border-rose-500/30">Fair</span>;
@@ -241,7 +255,7 @@ export const PeerList: React.FC<PeerListProps> = ({
 
                 {/* Real-time WebRTC getStats Audio Quality Telemetry */}
                 {isConnected && stats && (
-                  <div className="mt-3 p-2.5 bg-slate-950/80 rounded-lg border border-slate-800/80 grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] font-mono">
+                  <div className="mt-3 p-2.5 bg-slate-950/80 rounded-lg border border-slate-800/80 grid grid-cols-2 sm:grid-cols-5 gap-2 text-[11px] font-mono">
                     <div className="flex items-center gap-1.5 text-slate-400">
                       <Wifi className="w-3 h-3 text-cyan-400" />
                       <span>RTT: <strong className="text-slate-200">{stats.rttMs}ms</strong></span>
@@ -251,12 +265,17 @@ export const PeerList: React.FC<PeerListProps> = ({
                       <span>Jitter: <strong className="text-slate-200">{stats.jitterMs}ms</strong></span>
                     </div>
                     <div className="flex items-center gap-1.5 text-slate-400">
-                      <Radio className="w-3 h-3 text-emerald-400" />
-                      <span>Bitrate: <strong className="text-slate-200">{stats.audioBitrateKbps}kbps</strong></span>
+                      <span className="text-rose-400 text-xs">📉</span>
+                      <span>Loss: <strong className={stats.packetLossPercent && stats.packetLossPercent > 2 ? 'text-rose-400' : 'text-slate-200'}>
+                        {typeof stats.packetLossPercent === 'number' ? `${stats.packetLossPercent}%` : `${stats.packetsLost}pkts`}
+                      </strong></span>
                     </div>
-                    <div className="flex items-center justify-between text-slate-400">
-                      <span>Codec: <strong className="text-slate-200 uppercase">{stats.codec}</strong></span>
-                      {getQualityBadge(stats.rttMs, stats.jitterMs)}
+                    <div className="flex items-center gap-1.5 text-slate-400">
+                      <Radio className="w-3 h-3 text-emerald-400" />
+                      <span>Bitrate: <strong className="text-slate-200">{stats.audioBitrateKbps}k</strong></span>
+                    </div>
+                    <div className="flex items-center justify-between sm:justify-end gap-1.5 text-slate-400 col-span-2 sm:col-span-1">
+                      {getQualityBadge(stats)}
                     </div>
                   </div>
                 )}
