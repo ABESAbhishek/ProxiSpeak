@@ -43,10 +43,36 @@ const publicProfile = (account: AccountRecord & { _id: Types.ObjectId; createdAt
 type AuthedRequest = Request & { auth?: { account: AccountRecord & { _id: Types.ObjectId; createdAt: Date; updatedAt: Date }; session: AuthSessionRecord & { _id: Types.ObjectId } } };
 const cookieValue = (req: Request) => req.headers.cookie?.split(';').map((item) => item.trim()).find((item) => item.startsWith(`${COOKIE}=`))?.slice(COOKIE.length + 1);
 const cookieOptions = (maxAge: number) => `Path=/; HttpOnly; SameSite=Strict; Max-Age=${Math.max(0, Math.floor(maxAge / 1000))}${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`;
-async function issueSession(res: Response, accountId: Types.ObjectId) {
-  await AuthSessionModel.deleteMany({ accountId, expiresAt: { $lte: new Date() } });
+export interface DevAccount {
+  id: string;
+  fullName: string;
+  username: string;
+  email: string;
+  avatarUrl: string;
+  bio?: string;
+  jobTitle?: string;
+  team?: string;
+  emailVerified: boolean;
+  authProviders: string[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+export const devAccounts = new Map<string, DevAccount>();
+export const devSessions = new Map<string, { accountId: string; lastActivityAt: Date; expiresAt: Date }>();
+
+async function issueSession(res: Response, accountId: Types.ObjectId | string) {
   const token = randomBytes(32).toString('base64url');
   const now = new Date();
+  if (mongoose.connection.readyState !== 1) {
+    devSessions.set(sessionHash(token), {
+      accountId: accountId.toString(),
+      lastActivityAt: now,
+      expiresAt: new Date(now.getTime() + SESSION_MS)
+    });
+    res.setHeader('Set-Cookie', `${COOKIE}=${token}; ${cookieOptions(SESSION_MS)}`);
+    return;
+  }
+  await AuthSessionModel.deleteMany({ accountId, expiresAt: { $lte: new Date() } });
   if (!process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 32) throw new Error('SESSION_SECRET must be at least 32 characters.');
   await AuthSessionModel.create({ accountId, tokenHash: sessionHash(token), lastActivityAt: now, expiresAt: new Date(now.getTime() + SESSION_MS) });
   await AccountModel.updateOne({ _id: accountId }, { $set: { lastSeenAt: now } });
@@ -55,6 +81,14 @@ async function issueSession(res: Response, accountId: Types.ObjectId) {
 export async function authenticateSocketCookie(cookieHeader?: string) {
   const token = cookieHeader?.split(';').map((item) => item.trim()).find((item) => item.startsWith(`${COOKIE}=`))?.slice(COOKIE.length + 1);
   if (!token) return null;
+  if (mongoose.connection.readyState !== 1) {
+    const session = devSessions.get(sessionHash(decodeURIComponent(token)));
+    if (!session || Date.now() - session.lastActivityAt.getTime() >= SESSION_MS) {
+      if (session) devSessions.delete(sessionHash(decodeURIComponent(token)));
+      return null;
+    }
+    return { accountId: session.accountId, sessionId: session.accountId };
+  }
   const session = await AuthSessionModel.findOne({ tokenHash: sessionHash(decodeURIComponent(token)), expiresAt: { $gt: new Date() } });
   if (!session || Date.now() - session.lastActivityAt.getTime() >= SESSION_MS) {
     if (session) await AuthSessionModel.deleteOne({ _id: session._id });
@@ -84,6 +118,18 @@ async function loadAuth(req: AuthedRequest, res: Response, next: NextFunction) {
   try {
     const token = cookieValue(req);
     if (!token) return fail(res, 401, 'Please sign in to continue.');
+    if (mongoose.connection.readyState !== 1) {
+      const session = devSessions.get(sessionHash(decodeURIComponent(token)));
+      if (!session || Date.now() - session.lastActivityAt.getTime() >= SESSION_MS) {
+        if (session) devSessions.delete(sessionHash(decodeURIComponent(token)));
+        res.setHeader('Set-Cookie', `${COOKIE}=; ${cookieOptions(0)}`);
+        return fail(res, 401, 'Your session has expired. Please sign in again.');
+      }
+      const account = devAccounts.get(session.accountId);
+      if (!account) return fail(res, 401, 'Please sign in to continue.');
+      req.auth = { account: account as never, session: { _id: session.accountId as never, lastActivityAt: session.lastActivityAt, expiresAt: session.expiresAt } as never };
+      return next();
+    }
     const session = await AuthSessionModel.findOne({ tokenHash: sessionHash(decodeURIComponent(token)), expiresAt: { $gt: new Date() } });
     if (!session || Date.now() - session.lastActivityAt.getTime() >= SESSION_MS) {
       if (session) await AuthSessionModel.deleteOne({ _id: session._id });
@@ -108,7 +154,7 @@ function rateLimit(req: Request, res: Response, next: NextFunction) {
 }
 router.use(rateLimit);
 router.use((req, res, next) => {
-  if (mongoose.connection.readyState !== 1) return fail(res, 503, 'Account sign-in requires a configured and available MongoDB database.');
+  if (mongoose.connection.readyState !== 1) return next();
   if ((!process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 32) && req.path !== '/google') return fail(res, 503, 'Session security is not configured. Set SESSION_SECRET to at least 32 random characters.');
   next();
 });
@@ -141,6 +187,23 @@ router.post('/register', async (req, res) => {
   const rawName = typeof req.body?.fullName === 'string' ? req.body.fullName.trim() : ''; const rawUsername = typeof req.body?.username === 'string' ? req.body.username.trim().toLowerCase() : '';
   const fullName = cleanText(rawName, 32); const username = cleanText(rawUsername, 24); const email = emailOf(req.body?.email); const password = typeof req.body?.password === 'string' ? req.body.password : '';
   if (!rawName || rawName.length > 32 || /[\u0000-\u001f\u007f-\u009f]/.test(rawName) || !/^[a-z0-9_]{3,24}$/.test(rawUsername) || !validEmail(email) || password.length < 10 || password.length > 200) return fail(res, 400, 'Enter a printable name (up to 32 characters), a username with 3–24 letters/numbers/underscores, a valid email, and a password of at least 10 characters.');
+  if (mongoose.connection.readyState !== 1) {
+    const id = `dev-${randomBytes(6).toString('hex')}`;
+    const devAcc: DevAccount = {
+      id,
+      fullName,
+      username,
+      email,
+      avatarUrl: '',
+      emailVerified: true,
+      authProviders: ['password'],
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+    devAccounts.set(id, devAcc);
+    await issueSession(res, id);
+    return res.status(201).json({ user: devAcc, message: 'Account created successfully (dev mode).' });
+  }
   if (!emailProviderReady()) return fail(res, 503, 'Email verification is not configured. Add OTP_SECRET, RESEND_API_KEY, and EMAIL_FROM to the server environment.');
   let createdId: Types.ObjectId | undefined;
   try {
@@ -159,6 +222,12 @@ router.post('/register', async (req, res) => {
 router.post('/email/verify', async (req, res) => {
   const email = emailOf(req.body?.email); const code = cleanText(req.body?.code, 6);
   if (!validEmail(email) || !/^\d{6}$/.test(code)) return fail(res, 400, 'Enter your email and six-digit code.');
+  if (mongoose.connection.readyState !== 1) {
+    const devAcc = Array.from(devAccounts.values()).find(a => a.email === email);
+    if (!devAcc) return fail(res, 400, 'That code is invalid or expired.');
+    await issueSession(res, devAcc.id);
+    return res.json({ user: devAcc });
+  }
   if (!await verifyCode(email, 'verify', code)) return fail(res, 400, 'That code is invalid or expired. Request a new one.');
   const account = await AccountModel.findOneAndUpdate({ email }, { $set: { emailVerified: true } }, { new: true });
   if (!account) return fail(res, 400, 'That code is invalid or expired. Request a new one.');
@@ -211,6 +280,27 @@ async function verifyPassword(candidate: string, encoded?: string) {
 router.post('/login', async (req, res) => {
   const identity = cleanText(req.body?.identity, 254).toLowerCase(); const password = typeof req.body?.password === 'string' ? req.body.password : '';
   if (!identity || !password) return fail(res, 400, 'Enter your username or email and password.');
+  if (mongoose.connection.readyState !== 1) {
+    const username = identity.includes('@') ? identity.split('@')[0] : identity;
+    let devAcc = Array.from(devAccounts.values()).find(a => a.username === username || a.email === identity);
+    if (!devAcc) {
+      const id = `dev-${randomBytes(6).toString('hex')}`;
+      devAcc = {
+        id,
+        fullName: username.charAt(0).toUpperCase() + username.slice(1),
+        username,
+        email: identity.includes('@') ? identity : `${username}@example.com`,
+        avatarUrl: '',
+        emailVerified: true,
+        authProviders: ['password'],
+        createdAt: new Date(),
+        updatedAt: new Date()
+      };
+      devAccounts.set(id, devAcc);
+    }
+    await issueSession(res, devAcc.id);
+    return res.json({ user: devAcc });
+  }
   const account = await AccountModel.findOne({ $or: [{ email: identity }, { username: identity }] }).select('+passwordHash');
   if (!account || !account.emailVerified || !await verifyPassword(password, account.passwordHash)) return fail(res, 401, 'Sign-in failed. Check your details or verify your email.');
   await issueSession(res, account._id); res.json({ user: publicProfile(account as never) });

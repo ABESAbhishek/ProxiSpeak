@@ -12,9 +12,12 @@
     "build": "npm run build:server && npm run build:client",
     "type-check": "npm run build:server && npm run lint --prefix client",
     "test:spatial": "node server/test-spatial.mjs",
+    "test:mesh": "node server/test-mesh-scalability.mjs",
+    "test:telemetry": "node server/test-audio-telemetry.mjs",
+    "test:microphone": "node server/test-microphone-resilience.mjs",
     "test:signaling": "node server/test-signaling.mjs",
     "test:presence": "node server/test-presence.mjs",
-    "test": "npm run test:spatial"
+    "test": "npm run test:spatial && npm run test:mesh && npm run test:telemetry && npm run test:microphone"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"
