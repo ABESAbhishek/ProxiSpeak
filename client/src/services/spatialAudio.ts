@@ -40,6 +40,37 @@ export interface SpatialAudioConfig {
   model: AttenuationModel;   // Falloff mathematical model
 }
 
+export interface AudioObstacle {
+  x: number;
+  y: number;
+  halfWidth: number;
+  halfHeight: number;
+  attenuation: number;
+}
+
+// Office furniture obstacles converted to Position3D coordinates.
+// Coordinates are based on the existing OfficeScene3D layout.
+export const DEFAULT_AUDIO_OBSTACLES: AudioObstacle[] = [
+  // Desks
+  { x: 155.56, y: 88.33, halfWidth: 86.11, halfHeight: 58.33, attenuation: 0.45 },
+  { x: 844.44, y: 88.33, halfWidth: 86.11, halfHeight: 58.33, attenuation: 0.45 },
+  { x: 155.56, y: 465.56, halfWidth: 86.11, halfHeight: 58.33, attenuation: 0.45 },
+  { x: 844.44, y: 465.56, halfWidth: 86.11, halfHeight: 58.33, attenuation: 0.45 },
+
+  // Sofas
+  { x: 341.67, y: 245.56, halfWidth: 36.11, halfHeight: 83.33, attenuation: 0.6 },
+  { x: 658.33, y: 245.56, halfWidth: 36.11, halfHeight: 83.33, attenuation: 0.6 },
+
+  // Meeting table
+  { x: 500, y: 199.44, halfWidth: 69.44, halfHeight: 41.67, attenuation: 0.45 },
+
+  // Plants
+  { x: 41.67, y: 43.89, halfWidth: 23.33, halfHeight: 23.33, attenuation: 0.75 },
+  { x: 958.33, y: 43.89, halfWidth: 23.33, halfHeight: 23.33, attenuation: 0.75 },
+  { x: 41.67, y: 516.11, halfWidth: 23.33, halfHeight: 23.33, attenuation: 0.75 },
+  { x: 958.33, y: 516.11, halfWidth: 23.33, halfHeight: 23.33, attenuation: 0.75 }
+];
+
 export const DEFAULT_SPATIAL_CONFIG: SpatialAudioConfig = {
   minDistance: 30,
   maxDistance: 260,
@@ -102,6 +133,66 @@ export function calculateAttenuation(
 }
 
 /**
+ * Checks whether the line between two users intersects an obstacle.
+ */
+
+export function calculateObstacleAttenuation(
+  listenerPos: Position3D,
+  sourcePos: Position3D,
+  obstacles: AudioObstacle[]
+): number {
+  const dx = sourcePos.x - listenerPos.x;
+  const dy = sourcePos.y - listenerPos.y;
+
+  let attenuation = 1;
+
+  for (const obstacle of obstacles) {
+    const minX = obstacle.x - obstacle.halfWidth;
+    const maxX = obstacle.x + obstacle.halfWidth;
+    const minY = obstacle.y - obstacle.halfHeight;
+    const maxY = obstacle.y + obstacle.halfHeight;
+
+    let tMin = 0;
+    let tMax = 1;
+
+    const clip = (p: number, q: number): boolean => {
+      if (Math.abs(p) < 1e-10) return q >= 0;
+
+      const t = q / p;
+
+      if (p < 0) {
+        if (t > tMax) return false;
+        tMin = Math.max(tMin, t);
+      } else {
+        if (t < tMin) return false;
+        tMax = Math.min(tMax, t);
+      }
+
+      return true;
+    };
+
+    const intersects =
+      clip(-dx, listenerPos.x - minX) &&
+      clip(dx, maxX - listenerPos.x) &&
+      clip(-dy, listenerPos.y - minY) &&
+      clip(dy, maxY - listenerPos.y) &&
+      tMin <= tMax &&
+      tMax > 0 &&
+      tMin < 1;
+
+    if (intersects) {
+      attenuation *= Math.max(
+        0,
+        Math.min(1, obstacle.attenuation)
+      );
+    }
+  }
+
+  return attenuation;
+}
+
+
+/**
  * Calculates stereo panning (-1.0 to 1.0) and azimuth angle based on listener position and orientation.
  *
  * @param listenerPos Listener's position
@@ -144,10 +235,19 @@ export function computeSpatialAudio(
   listenerPos: Position3D,
   listenerHeadingRad: number,
   sourcePos: Position3D,
-  config: SpatialAudioConfig = DEFAULT_SPATIAL_CONFIG
+  config: SpatialAudioConfig = DEFAULT_SPATIAL_CONFIG,
+  obstacles: AudioObstacle[] = DEFAULT_AUDIO_OBSTACLES
 ): SpatialAudioResult {
   const distance = calculate3DDistance(listenerPos, sourcePos);
-  const volume = calculateAttenuation(distance, config);
+  const baseVolume = calculateAttenuation(distance, config);
+
+  const obstacleAttenuation = calculateObstacleAttenuation(
+    listenerPos,
+    sourcePos,
+    obstacles
+  );
+
+  const volume = baseVolume * obstacleAttenuation;
   const { pan, azimuthDeg } = calculateStereoPanAndAzimuth(listenerPos, listenerHeadingRad, sourcePos);
 
   return {
@@ -221,7 +321,7 @@ export class SpatialAudioGraph {
    * Applies smooth spatial parameters (volume and stereo pan) to a peer stream.
    */
 
-  
+
   public updateSpatialParameters(
     peerId: string,
     volume: number,

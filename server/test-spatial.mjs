@@ -1,4 +1,8 @@
 import assert from 'node:assert';
+import {
+  calculateObstacleAttenuation,
+  computeSpatialAudio
+} from '../client/src/services/spatialAudio.ts';
 
 /**
  * Spatial Audio Engine Mathematical Verification
@@ -109,6 +113,100 @@ const left = calculateStereoPanAndAzimuth(listener, 0, { x: 50, y: 100 });
 assert.strictEqual(left.azimuthDeg, -90);
 assert.strictEqual(Math.round(left.pan * 100) / 100, -1);
 console.log(`[PASS] Direction to the left: Azimuth = ${left.azimuthDeg}deg, Pan = ${left.pan} (Full Left)`);
+// 4. Obstacle-aware audio attenuation
+// function calculateObstacleAttenuation(listenerPos, sourcePos, obstacles) {
+//   let attenuation = 1;
+
+//   for (const obstacle of obstacles) {
+//     const dx = sourcePos.x - listenerPos.x;
+//     const dy = sourcePos.y - listenerPos.y;
+
+//     const steps = 100;
+//     let intersects = false;
+
+//     for (let i = 1; i < steps; i++) {
+//       const t = i / steps;
+//       const x = listenerPos.x + dx * t;
+//       const y = listenerPos.y + dy * t;
+
+//       if (
+//         Math.abs(x - obstacle.x) <= obstacle.halfWidth &&
+//         Math.abs(y - obstacle.y) <= obstacle.halfHeight
+//       ) {
+//         intersects = true;
+//         break;
+//       }
+//     }
+
+//     if (intersects) {
+//       attenuation *= Math.max(0, Math.min(1, obstacle.attenuation));
+//     }
+//   }
+
+//   return attenuation;
+// }
+
+const audioListener = { x: 0, y: 0 };
+const audioSource = { x: 100, y: 0 };
+
+const noObstacles = calculateObstacleAttenuation(
+  audioListener,
+  audioSource,
+  []
+);
+assert.strictEqual(noObstacles, 1);
+console.log('[PASS] No obstacle: audio remains unaffected');
+
+const oneObstacle = calculateObstacleAttenuation(
+  audioListener,
+  audioSource,
+  [{ x: 50, y: 0, halfWidth: 5, halfHeight: 5, attenuation: 0.5 }]
+);
+assert.strictEqual(oneObstacle, 0.5);
+console.log('[PASS] One obstacle: audio attenuation = 0.5');
+
+const multipleObstacles = calculateObstacleAttenuation(
+  audioListener,
+  audioSource,
+  [
+    { x: 30, y: 0, halfWidth: 5, halfHeight: 5, attenuation: 0.5 },
+    { x: 70, y: 0, halfWidth: 5, halfHeight: 5, attenuation: 0.4 }
+  ]
+);
+assert.strictEqual(multipleObstacles, 0.2);
+console.log('[PASS] Multiple obstacles: cumulative attenuation = 0.2');
+
+const obstacleOutsidePath = calculateObstacleAttenuation(
+  audioListener,
+  audioSource,
+  [{ x: 50, y: 30, halfWidth: 5, halfHeight: 5, attenuation: 0.5 }]
+);
+assert.strictEqual(obstacleOutsidePath, 1);
+console.log('[PASS] Obstacle outside sound path: audio remains unaffected');
+
+// 5. Production spatial audio integration with obstacles
+
+const clearAudio = computeSpatialAudio(
+  { x: 0, y: 0, z: 0 },
+  0,
+  { x: 100, y: 0, z: 0 },
+  undefined,
+  []
+);
+
+const blockedAudio = computeSpatialAudio(
+  { x: 0, y: 0, z: 0 },
+  0,
+  { x: 100, y: 0, z: 0 },
+  undefined,
+  [{ x: 50, y: 0, halfWidth: 5, halfHeight: 5, attenuation: 0.5 }]
+);
+
+assert.ok(blockedAudio.volume < clearAudio.volume);
+assert.strictEqual(blockedAudio.pan, clearAudio.pan);
+
+console.log('[PASS] Production spatial audio applies obstacle attenuation');
+console.log('[PASS] Obstacle attenuation preserves stereo panning');
 
 console.log('\n======================================================');
 console.log('  ALL SPATIAL AUDIO MATHEMATICAL TESTS PASSED!        ');

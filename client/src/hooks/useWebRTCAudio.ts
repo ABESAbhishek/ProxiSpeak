@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { socket, socketService } from '../services/socket';
 import { WebRTCManager } from '../services/webrtcManager';
-// import { computeSpatialAudio } from '../services/spatialAudio';
+import { computeSpatialAudio } from '../services/spatialAudio';
 import type {
   WebRTCOfferPayload,
   WebRTCAnswerPayload,
@@ -57,8 +57,8 @@ export function useWebRTCAudio(
     null
   );
   const [peers, setPeers] = useState<Record<string, RemotePeerAudio>>({});
-  // const [localPosition, setLocalPosition] =
-  //   useState<Position3D>(initialPosition);
+  const [localPosition, setLocalPosition] =
+    useState<Position3D>(initialPosition);
   const [signalingLogs, setSignalingLogs] = useState<SignalingLogEntry[]>([]);
 
   const webrtcManagerRef = useRef<WebRTCManager | null>(null);
@@ -145,7 +145,8 @@ export function useWebRTCAudio(
               pan: existing?.pan ?? 0,
               isMuted: existing?.isMuted ?? false,
               isSpeaking: existing?.isSpeaking ?? false,
-              position: existing?.position
+              position: existing?.position,
+              roomId: existing?.roomId
             }
           };
         });
@@ -338,26 +339,28 @@ export function useWebRTCAudio(
 
           next[user.id] = existing
             ? {
-                ...existing,
-                accountId: user.accountId ?? existing.accountId,
-                username: user.username || existing.username,
-                avatarUrl: user.avatarUrl ?? existing.avatarUrl,
-                position: user.position || existing.position,
-                isMuted: user.isMuted ?? existing.isMuted,
-                isSpeaking: user.isSpeaking ?? existing.isSpeaking
-              }
+              ...existing,
+              accountId: user.accountId ?? existing.accountId,
+              username: user.username || existing.username,
+              avatarUrl: user.avatarUrl ?? existing.avatarUrl,
+              roomId: user.roomId ?? payload.roomId,
+              position: user.position || existing.position,
+              isMuted: user.isMuted ?? existing.isMuted,
+              isSpeaking: user.isSpeaking ?? existing.isSpeaking
+            }
             : {
-                peerId: user.id,
-                accountId: user.accountId,
-                username: user.username,
-                avatarUrl: user.avatarUrl,
-                stream: new MediaStream(),
-                connectionState: 'new',
-                volume: 1.0,
-                isMuted: user.isMuted || false,
-                isSpeaking: user.isSpeaking || false,
-                position: user.position
-              };
+              peerId: user.id,
+              accountId: user.accountId,
+              username: user.username,
+              avatarUrl: user.avatarUrl,
+              roomId: user.roomId ?? payload.roomId,
+              stream: new MediaStream(),
+              connectionState: 'new',
+              volume: 1.0,
+              isMuted: user.isMuted || false,
+              isSpeaking: user.isSpeaking || false,
+              position: user.position
+            };
         });
 
         return next;
@@ -380,6 +383,7 @@ export function useWebRTCAudio(
             accountId: user.accountId,
             username: user.username,
             avatarUrl: user.avatarUrl,
+            roomId: user.roomId ?? currentRoomIdRef.current,
             stream: new MediaStream(),
             connectionState: 'new',
             volume: 1.0,
@@ -555,61 +559,59 @@ export function useWebRTCAudio(
     return () => clearInterval(interval);
   }, [isConnected]);
 
-  // // Automatically calculate and apply each remote user's audio gain
-  // // whenever local or remote positions change.
-  // useEffect(() => {
-  //   const spatialUpdates: Record<
-  //     string,
-  //     { volume: number; pan: number }
-  //   > = {};
+  // Automatically calculate and apply spatial audio for remote users.
+  useEffect(() => {
+    const spatialUpdates: Record<
+      string,
+      { volume: number; pan: number }
+    > = {};
 
-  //   Object.values(peers).forEach((peer) => {
-  //     if (!peer.position) return;
+    Object.values(peers).forEach((peer) => {
+      if (!peer.position) return;
 
-  //     const spatial = computeSpatialAudio(
-  //       localPosition,
-  //       0,
-  //       peer.position
-  //     );
+      const spatial = computeSpatialAudio(
+        localPosition,
+        0,
+        peer.position
+      );
 
-  //     const volume = Math.max(0, Math.min(1, spatial.volume));
-  //     const pan = Math.max(-1, Math.min(1, spatial.pan));
+      const volume = Math.max(0, Math.min(1, spatial.volume));
+      const pan = Math.max(-1, Math.min(1, spatial.pan));
 
-  //     spatialUpdates[peer.peerId] = { volume, pan };
+      spatialUpdates[peer.peerId] = { volume, pan };
 
-  //     // Apply gain through the manager's existing remote-audio path.
-  //     webrtcManagerRef.current?.setPeerSpatial(
-  //       peer.peerId,
-  //       volume,
-  //       pan
-  //     );
-  //   });
+      webrtcManagerRef.current?.setPeerSpatial(
+        peer.peerId,
+        volume,
+        pan
+      );
+    });
 
-  //   setPeers((previous) => {
-  //     let changed = false;
-  //     const next = { ...previous };
+    setPeers((previous) => {
+      let changed = false;
+      const next = { ...previous };
 
-  //     Object.entries(spatialUpdates).forEach(([peerId, spatial]) => {
-  //       const existing = previous[peerId];
-  //       if (!existing) return;
+      Object.entries(spatialUpdates).forEach(([peerId, spatial]) => {
+        const existing = previous[peerId];
+        if (!existing) return;
 
-  //       if (
-  //         Math.abs((existing.volume ?? 1) - spatial.volume) > 0.01 ||
-  //         Math.abs((existing.pan ?? 0) - spatial.pan) > 0.01
-  //       ) {
-  //         next[peerId] = {
-  //           ...existing,
-  //           volume: spatial.volume,
-  //           pan: spatial.pan
-  //         };
+        if (
+          Math.abs((existing.volume ?? 1) - spatial.volume) > 0.01 ||
+          Math.abs((existing.pan ?? 0) - spatial.pan) > 0.01
+        ) {
+          next[peerId] = {
+            ...existing,
+            volume: spatial.volume,
+            pan: spatial.pan
+          };
 
-  //         changed = true;
-  //       }
-  //     });
+          changed = true;
+        }
+      });
 
-  //     return changed ? next : previous;
-  //   });
-  // }, [peers, localPosition]);
+      return changed ? next : previous;
+    });
+  }, [peers, localPosition]);
 
   const startCall = useCallback(async (peerId: string) => {
     if (webrtcManagerRef.current) {
@@ -671,7 +673,7 @@ export function useWebRTCAudio(
   const updateLocalPosition = useCallback(
     (position: Position3D) => {
       initialPositionRef.current = position;
-      // setLocalPosition(position);
+      setLocalPosition(position);
 
       if (isConnected) {
         socketService.updatePosition(position);
