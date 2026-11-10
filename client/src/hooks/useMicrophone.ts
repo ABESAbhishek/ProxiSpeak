@@ -32,6 +32,83 @@ export interface UseMicrophoneResult {
   startMicrophone: (deviceId?: string) => Promise<MediaStream | null>;
   stopMicrophone: () => void;
   toggleMute: () => void;
+  micGain: number;
+  setMicGain: (gain: number) => void;
+  activeConstraintTier?: string;
+  isRecovering?: boolean;
+}
+
+
+interface MicrophoneConstraintTier {
+  name: string;
+  constraints: MediaStreamConstraints;
+}
+
+function buildConstraintLadder(
+  targetDevice: string,
+  processing: AudioProcessingConstraints
+): MicrophoneConstraintTier[] {
+  const ladder: MicrophoneConstraintTier[] = [];
+
+  if (targetDevice) {
+    ladder.push({
+      name: 'exact-device-processed',
+      constraints: {
+        audio: {
+          deviceId: { exact: targetDevice },
+          echoCancellation: processing.echoCancellation,
+          noiseSuppression: processing.noiseSuppression,
+          autoGainControl: processing.autoGainControl
+        },
+        video: false
+      }
+    });
+
+    ladder.push({
+      name: 'ideal-device-processed',
+      constraints: {
+        audio: {
+          deviceId: { ideal: targetDevice },
+          echoCancellation: processing.echoCancellation,
+          noiseSuppression: processing.noiseSuppression,
+          autoGainControl: processing.autoGainControl
+        },
+        video: false
+      }
+    });
+  } else {
+    ladder.push({
+      name: 'default-device-processed',
+      constraints: {
+        audio: {
+          echoCancellation: processing.echoCancellation,
+          noiseSuppression: processing.noiseSuppression,
+          autoGainControl: processing.autoGainControl
+        },
+        video: false
+      }
+    });
+  }
+
+  ladder.push({
+    name: 'relaxed-processing',
+    constraints: {
+      audio: {
+        echoCancellation: true
+      },
+      video: false
+    }
+  });
+
+  ladder.push({
+    name: 'minimal-fallback',
+    constraints: {
+      audio: true,
+      video: false
+    }
+  });
+
+  return ladder;
 }
 
 export function useMicrophone(): UseMicrophoneResult {
@@ -52,6 +129,15 @@ export function useMicrophone(): UseMicrophoneResult {
     noiseSuppression: true,
     autoGainControl: true
   });
+
+  const [micGain, setMicGainState] = useState<number>(1.0);
+  const micGainRef = useRef<number>(1.0);
+  const gainNodeRef = useRef<GainNode | null>(null);
+
+  const [activeConstraintTier, setActiveConstraintTier] = useState<string>('default-device-processed');
+  const [isRecovering, setIsRecovering] = useState<boolean>(false);
+  const recoveryAttemptRef = useRef<number>(0);
+  const isIntentionalStopRef = useRef<boolean>(false);
 
   // Microphone Self-Test / Loopback test state
   const [isSelfTesting, setIsSelfTesting] = useState<boolean>(false);
@@ -105,13 +191,36 @@ export function useMicrophone(): UseMicrophoneResult {
     checkPermissionState();
     refreshDevices();
 
+    const handleDeviceChange = async () => {
+      try {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+        const allDevices = await navigator.mediaDevices.enumerateDevices();
+        const audioInputs = allDevices.filter((d) => d.kind === 'audioinput');
+        const audioOutputs = allDevices.filter((d) => d.kind === 'audiooutput');
+        setAvailableDevices(audioInputs);
+        setAvailableOutputDevices(audioOutputs);
+
+        // Hotplug check: if currently using a specific device that got unplugged
+        if (selectedDeviceId && streamRef.current && streamRef.current.active) {
+          const stillPresent = audioInputs.some((d) => d.deviceId === selectedDeviceId);
+          if (!stillPresent) {
+            console.warn(`[Microphone] Active device ${selectedDeviceId} unplugged. Seamlessly hotplugging to default input...`);
+            setSelectedDeviceId('');
+            await startMicrophone('');
+          }
+        }
+      } catch (err) {
+        console.warn('[Microphone] Error during device hotplug change handling:', err);
+      }
+    };
+
     if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
-      navigator.mediaDevices.addEventListener('devicechange', refreshDevices);
+      navigator.mediaDevices.addEventListener('devicechange', handleDeviceChange);
       return () => {
-        navigator.mediaDevices.removeEventListener('devicechange', refreshDevices);
+        navigator.mediaDevices.removeEventListener('devicechange', handleDeviceChange);
       };
     }
-  }, [checkPermissionState, refreshDevices]);
+  }, [checkPermissionState, refreshDevices, selectedDeviceId]);
 
   // Audio level and 8-band frequency monitoring using Web Audio API with Voice Activity Detection (VAD)
   const startLevelMeter = useCallback((mediaStream: MediaStream) => {
@@ -124,8 +233,13 @@ export function useMicrophone(): UseMicrophoneResult {
       analyser.fftSize = 64;
       analyserRef.current = analyser;
 
+      const gainNode = audioCtx.createGain();
+      gainNode.gain.setValueAtTime(micGainRef.current, audioCtx.currentTime);
+      gainNodeRef.current = gainNode;
+
       const source = audioCtx.createMediaStreamSource(mediaStream);
-      source.connect(analyser);
+      source.connect(gainNode);
+      gainNode.connect(analyser);
 
       const bufferLength = analyser.frequencyBinCount;
       const dataArray = new Uint8Array(bufferLength);
@@ -192,6 +306,7 @@ export function useMicrophone(): UseMicrophoneResult {
       audioContextRef.current.close().catch(() => { });
       audioContextRef.current = null;
     }
+    gainNodeRef.current = null;
     analyserRef.current = null;
     setAudioLevel(0);
     setIsSpeaking(false);
@@ -274,6 +389,8 @@ export function useMicrophone(): UseMicrophoneResult {
    * STRICT REQUIREMENT: Only called when user clicks Start Microphone / Start Audio.
    */
   const startMicrophone = useCallback(async (deviceIdToUse?: string): Promise<MediaStream | null> => {
+    isIntentionalStopRef.current = false;
+
     // If already active with the same device, return the existing stream
     if (streamRef.current && streamRef.current.active && !deviceIdToUse) {
       return streamRef.current;
@@ -293,22 +410,57 @@ export function useMicrophone(): UseMicrophoneResult {
       return null;
     }
 
-    try {
-      const targetDevice = deviceIdToUse || selectedDeviceId;
-      const audioConstraintsConfig: MediaTrackConstraints = {
-        echoCancellation: audioConstraints.echoCancellation,
-        noiseSuppression: audioConstraints.noiseSuppression,
-        autoGainControl: audioConstraints.autoGainControl
-      };
+    const targetDevice = deviceIdToUse !== undefined ? deviceIdToUse : selectedDeviceId;
+    const ladder = buildConstraintLadder(targetDevice, audioConstraints);
 
-      if (targetDevice) {
-        audioConstraintsConfig.deviceId = { exact: targetDevice };
+    let mediaStream: MediaStream | null = null;
+    let chosenTier = 'minimal-fallback';
+    let lastError: unknown = null;
+
+    for (const tier of ladder) {
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia(tier.constraints);
+        chosenTier = tier.name;
+        break;
+      } catch (err: unknown) {
+        lastError = err;
+        if (err instanceof DOMException && (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError')) {
+          break;
+        }
+        console.warn(`[Microphone] Constraint tier '${tier.name}' failed, falling back to next tier:`, err);
       }
+    }
 
-      const mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: audioConstraintsConfig,
-        video: false
-      });
+    if (!mediaStream) {
+      console.error('[Microphone] Error requesting permission across all constraint tiers:', lastError);
+      releaseTracks();
+
+      if (lastError instanceof DOMException) {
+        if (lastError.name === 'NotAllowedError' || lastError.name === 'PermissionDeniedError') {
+          setStatus('denied');
+          setPermissionState('denied');
+          setErrorMessage('Microphone access was denied. Please allow microphone permissions in your browser settings.');
+        } else if (lastError.name === 'NotFoundError' || lastError.name === 'DevicesNotFoundError') {
+          setStatus('error');
+          setErrorMessage('No microphone device found. Please connect a microphone and retry.');
+        } else if (lastError.name === 'NotReadableError' || lastError.name === 'TrackStartError') {
+          setStatus('error');
+          setErrorMessage('Microphone is already in use by another application.');
+        } else {
+          setStatus('error');
+          setErrorMessage(`Microphone error: ${lastError.message}`);
+        }
+      } else {
+        setStatus('error');
+        setErrorMessage('Failed to start microphone. Please check your system audio settings.');
+      }
+      return null;
+    }
+
+    try {
+      setActiveConstraintTier(chosenTier);
+      recoveryAttemptRef.current = 0;
+      setIsRecovering(false);
 
       streamRef.current = mediaStream;
       setStream(mediaStream);
@@ -321,7 +473,6 @@ export function useMicrophone(): UseMicrophoneResult {
 
       // Handle missing audio tracks.
       const audioTracks = mediaStream.getAudioTracks();
-
       if (
         audioTracks.length === 0 ||
         audioTracks.every((track) => track.readyState === 'ended')
@@ -334,54 +485,67 @@ export function useMicrophone(): UseMicrophoneResult {
         return null;
       }
 
-      // Handle microphone tracks ending unexpectedly.
+      // Handle microphone tracks ending or muting unexpectedly with self-healing recovery
       audioTracks.forEach((track) => {
         track.onended = () => {
           if (streamRef.current !== mediaStream) return;
+          if (isIntentionalStopRef.current) return;
 
-          console.warn('[Microphone] Audio track ended unexpectedly.');
+          console.warn('[Microphone] Audio track ended unexpectedly. Initiating self-healing recovery...');
 
-          releaseTracks();
-          setStatus('error');
-          setErrorMessage(
-            'Your microphone stopped unexpectedly. Please check your device and restart the microphone.'
-          );
+          if (recoveryAttemptRef.current < 2) {
+            recoveryAttemptRef.current += 1;
+            setIsRecovering(true);
+            setStatus('requesting');
+
+            window.setTimeout(() => {
+              startMicrophone('').then((recovered) => {
+                setIsRecovering(false);
+                if (!recovered) {
+                  releaseTracks();
+                  setStatus('error');
+                  setErrorMessage(
+                    'Microphone disconnected. Please reconnect your audio device and restart the microphone.'
+                  );
+                }
+              });
+            }, 400);
+          } else {
+            releaseTracks();
+            setStatus('error');
+            setErrorMessage(
+              'Your microphone stopped unexpectedly. Please check your device and restart the microphone.'
+            );
+          }
+        };
+
+        track.onmute = () => {
+          console.warn('[Microphone] Audio track muted by OS or physical toggle.');
+        };
+
+        track.onunmute = () => {
+          console.log('[Microphone] Audio track unmuted by OS.');
         };
       });
 
       startLevelMeter(mediaStream);
       return mediaStream;
     } catch (err: unknown) {
-      console.error('[Microphone] Error requesting permission:', err);
+      console.error('[Microphone] Error initializing active stream:', err);
       releaseTracks();
-
-      if (err instanceof DOMException) {
-        if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-          setStatus('denied');
-          setPermissionState('denied');
-          setErrorMessage('Microphone access was denied. Please allow microphone permissions in your browser settings.');
-        } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
-          setStatus('error');
-          setErrorMessage('No microphone device found. Please connect a microphone and retry.');
-        } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
-          setStatus('error');
-          setErrorMessage('Microphone is already in use by another application.');
-        } else {
-          setStatus('error');
-          setErrorMessage(`Microphone error: ${err.message}`);
-        }
-      } else {
-        setStatus('error');
-        setErrorMessage('Failed to start microphone. Please check your system audio settings.');
-      }
+      setStatus('error');
+      setErrorMessage('Failed to initialize microphone audio graph.');
       return null;
     }
-  }, [releaseTracks, startLevelMeter, selectedDeviceId, refreshDevices]);
+  }, [releaseTracks, startLevelMeter, selectedDeviceId, audioConstraints, refreshDevices]);
 
   /**
    * Stops the microphone and releases all tracks.
    */
   const stopMicrophone = useCallback(() => {
+    isIntentionalStopRef.current = true;
+    recoveryAttemptRef.current = 0;
+    setIsRecovering(false);
     releaseTracks();
     setStatus('idle');
     setIsMuted(false);
@@ -391,6 +555,15 @@ export function useMicrophone(): UseMicrophoneResult {
   /**
    * Toggles mute state without releasing the media track.
    */
+  const setMicGain = useCallback((gain: number) => {
+    const safeGain = Math.max(0, Math.min(2.0, Number.isFinite(gain) ? gain : 1.0));
+    micGainRef.current = safeGain;
+    setMicGainState(safeGain);
+    if (gainNodeRef.current && audioContextRef.current) {
+      gainNodeRef.current.gain.setTargetAtTime(safeGain, audioContextRef.current.currentTime, 0.05);
+    }
+  }, []);
+
   const toggleMute = useCallback(() => {
     if (!streamRef.current) return;
 
@@ -541,6 +714,10 @@ export function useMicrophone(): UseMicrophoneResult {
     clearSelfTest,
     startMicrophone,
     stopMicrophone,
-    toggleMute
+    toggleMute,
+    micGain,
+    setMicGain,
+    activeConstraintTier,
+    isRecovering
   };
 }

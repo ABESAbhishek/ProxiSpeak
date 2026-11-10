@@ -1,16 +1,17 @@
 import React, { useState, useEffect } from 'react';
-import { Compass, Sparkles, Sliders, Volume2, Move } from 'lucide-react';
+import { Compass, Sparkles, Sliders, Volume2, Move, Shield, Layers } from 'lucide-react';
 import type { RemotePeerAudio } from '../types';
 import {
-  computeSpatialAudio,
-  DEFAULT_SPATIAL_CONFIG
+  evaluateOccludedSpatialAudio,
+  DEFAULT_SPATIAL_CONFIG,
+  SPATIAL_PRESETS
 } from '../services/spatialAudio';
-import type { AttenuationModel } from '../services/spatialAudio';
+import type { AttenuationModel, SpatialAudioResult } from '../services/spatialAudio';
 
 interface ProximitySimulatorProps {
   peers: Record<string, RemotePeerAudio>;
   localIsSpeaking?: boolean;
-  onSetSpatial: (peerId: string, volume: number, pan?: number) => void;
+  onSetSpatial: (peerId: string, volume: number, pan?: number, cutoffHz?: number) => void;
   onLocalMove?: (position: { x: number; y: number; z: number }) => void;
 }
 
@@ -20,11 +21,16 @@ export const ProximitySimulator: React.FC<ProximitySimulatorProps> = ({
   onSetSpatial,
   onLocalMove
 }) => {
-  const [localPos, setLocalPos] = useState<{ x: number; y: number }>({ x: 140, y: 130 });
+  const [localPos, setLocalPos] = useState<{ x: number; y: number }>({ x: 120, y: 130 });
   const [listenerHeadingDeg, setListenerHeadingDeg] = useState<number>(0); // 0 = Facing North
   const [peerPositions, setPeerPositions] = useState<Record<string, { x: number; y: number }>>({});
   const [isSimulating, setIsSimulating] = useState<boolean>(true);
   const [model, setModel] = useState<AttenuationModel>('linear');
+  const [preset, setPreset] = useState<keyof typeof SPATIAL_PRESETS>('normal');
+  const [hasPartitionWall, setHasPartitionWall] = useState<boolean>(true);
+  const [peerAcoustics, setPeerAcoustics] = useState<Record<string, SpatialAudioResult & { isOccluded: boolean }>>({});
+
+  const PARTITION_WALL_X = 200;
 
   // Sync positions when peers change (adopts real positions from Member 2 signaling when available)
   useEffect(() => {
@@ -36,9 +42,9 @@ export const ProximitySimulator: React.FC<ProximitySimulatorProps> = ({
         if (peer?.position && typeof peer.position.x === 'number' && typeof peer.position.y === 'number') {
           next[id] = { x: peer.position.x, y: peer.position.y };
         } else if (!next[id]) {
-          // Distribute initial positions
+          // Distribute initial positions across the partition wall
           next[id] = {
-            x: 90 + ((index * 130) % 240),
+            x: 230 + ((index * 90) % 180),
             y: 80 + ((index * 80) % 160)
           };
         }
@@ -52,30 +58,49 @@ export const ProximitySimulator: React.FC<ProximitySimulatorProps> = ({
     if (!isSimulating) return;
 
     const headingRad = (listenerHeadingDeg * Math.PI) / 180;
-    const config = {
-      ...DEFAULT_SPATIAL_CONFIG,
+    const baseConfig = SPATIAL_PRESETS[preset] || DEFAULT_SPATIAL_CONFIG;
+    const activeConfig = {
+      ...baseConfig,
       model
     };
 
+    const nextAcoustics: Record<string, SpatialAudioResult & { isOccluded: boolean }> = {};
+
     Object.entries(peerPositions).forEach(([peerId, pos]) => {
       if (peers[peerId]) {
-        const result = computeSpatialAudio(
+        const isAcrossWall = hasPartitionWall && (
+          (localPos.x < PARTITION_WALL_X && pos.x >= PARTITION_WALL_X) ||
+          (localPos.x >= PARTITION_WALL_X && pos.x < PARTITION_WALL_X)
+        );
+
+        const result = evaluateOccludedSpatialAudio(
           { x: localPos.x, y: localPos.y, z: 0 },
           headingRad,
           { x: pos.x, y: pos.y, z: 0 },
-          config
+          {
+            config: activeConfig,
+            isDifferentRoom: isAcrossWall,
+            wallCount: 1
+          }
         );
 
-        onSetSpatial(peerId, result.volume, result.pan);
+        nextAcoustics[peerId] = {
+          ...result,
+          isOccluded: isAcrossWall
+        };
+
+        onSetSpatial(peerId, result.volume, result.pan, result.cutoffFrequencyHz);
       }
     });
-  }, [localPos, listenerHeadingDeg, peerPositions, isSimulating, peers, model, onSetSpatial]);
+
+    setPeerAcoustics(nextAcoustics);
+  }, [localPos, listenerHeadingDeg, peerPositions, isSimulating, peers, model, preset, hasPartitionWall, onSetSpatial]);
 
   const peerEntries = Object.entries(peers);
 
   return (
     <div className="card glass-panel">
-      <div className="card-header">
+      <div className="card-header flex-wrap gap-2">
         <div className="flex items-center gap-3">
           <div className="p-2.5 rounded-xl bg-cyan-500/10 text-cyan-400">
             <Compass className="w-5 h-5" />
@@ -83,12 +108,32 @@ export const ProximitySimulator: React.FC<ProximitySimulatorProps> = ({
           <div>
             <h2 className="text-lg font-bold text-white tracking-tight">Week 2 Proximity Audio Engine Demo</h2>
             <p className="text-xs text-slate-400">
-              Task 4: Prepare audio module for distance attenuation & stereo spatialization
+              Task 4: Acoustic Presets, Wall Occlusion & Stereo Spatialization
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center flex-wrap gap-2">
+          {/* Zone Acoustic Preset Selector */}
+          <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-1 text-xs text-slate-300 font-mono">
+            <Layers className="w-3.5 h-3.5 text-cyan-400" />
+            <select
+              value={preset}
+              onChange={(e) => {
+                const nextPreset = e.target.value as keyof typeof SPATIAL_PRESETS;
+                setPreset(nextPreset);
+                setModel(SPATIAL_PRESETS[nextPreset].model);
+              }}
+              className="bg-transparent text-xs text-slate-200 focus:outline-none"
+              title="Acoustic Office Zone Preset"
+            >
+              <option value="normal" className="bg-slate-900">Zone: Open Office (260m)</option>
+              <option value="whisper" className="bg-slate-900">Zone: Focus / Whisper (90m)</option>
+              <option value="meeting" className="bg-slate-900">Zone: Conference (350m)</option>
+              <option value="auditorium" className="bg-slate-900">Zone: Auditorium (800m)</option>
+            </select>
+          </div>
+
           {/* Attenuation Curve Model Selector */}
           <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-1 text-xs text-slate-300 font-mono">
             <Sliders className="w-3.5 h-3.5 text-indigo-400" />
@@ -103,6 +148,16 @@ export const ProximitySimulator: React.FC<ProximitySimulatorProps> = ({
               <option value="exponential" className="bg-slate-900">Exponential Decay</option>
             </select>
           </div>
+
+          {/* Partition Wall Occlusion Toggle */}
+          <button
+            onClick={() => setHasPartitionWall(!hasPartitionWall)}
+            className={`btn btn-sm ${hasPartitionWall ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 hover:bg-amber-500/30' : 'btn-secondary text-slate-400'}`}
+            title="Toggle acoustic glass partition / wall occlusion"
+          >
+            <Shield className="w-3.5 h-3.5 mr-1" />
+            {hasPartitionWall ? 'Partition Wall ON' : 'No Walls'}
+          </button>
 
           <button
             onClick={() => setIsSimulating(!isSimulating)}
@@ -209,12 +264,30 @@ export const ProximitySimulator: React.FC<ProximitySimulatorProps> = ({
           </div>
         </div>
 
+        {/* Acoustic Partition Wall Boundary */}
+        {hasPartitionWall && (
+          <div
+            style={{ left: `${PARTITION_WALL_X}px` }}
+            className="absolute top-0 bottom-0 w-1 bg-amber-500/30 border-l-2 border-dashed border-amber-400/70 z-10 pointer-events-none flex flex-col justify-between py-2 items-center"
+          >
+            <span className="text-[8px] font-mono text-amber-300 bg-slate-950/95 px-1 py-0.5 rounded border border-amber-500/40 transform -rotate-90 whitespace-nowrap shadow-sm">
+              Glass Partition
+            </span>
+            <span className="text-[8px] font-mono text-amber-400 bg-slate-950/95 px-1 py-0.5 rounded border border-amber-500/40 transform -rotate-90 whitespace-nowrap shadow-sm">
+              -58% Vol | 2.4kHz Lowpass
+            </span>
+          </div>
+        )}
+
         {/* Remote peer nodes */}
         {peerEntries.map(([peerId, peer]) => {
           const pos = peerPositions[peerId] || { x: 220, y: 120 };
           const dist = Math.round(Math.hypot(pos.x - localPos.x, pos.y - localPos.y));
           const pan = peer.pan ?? 0;
           const isPeerSpeaking = peer.isSpeaking;
+          const acoustics = peerAcoustics[peerId];
+          const isOccluded = acoustics?.isOccluded;
+          const cutoffKHz = acoustics ? (acoustics.cutoffFrequencyHz / 1000).toFixed(1) : '20.0';
 
           return (
             <div
@@ -269,6 +342,14 @@ export const ProximitySimulator: React.FC<ProximitySimulatorProps> = ({
                   <div className="text-[8px] text-cyan-400">
                     Pan: {pan > 0.05 ? `R ${Math.round(pan * 100)}%` : pan < -0.05 ? `L ${Math.round(Math.abs(pan) * 100)}%` : 'Center'}
                   </div>
+                  <div className="text-[8px] text-indigo-300">
+                    Filter: {cutoffKHz} kHz
+                  </div>
+                  {isOccluded && (
+                    <div className="text-[8px] text-amber-300 font-semibold bg-amber-500/20 px-1 rounded mt-0.5 border border-amber-500/30">
+                      Wall Occluded
+                    </div>
+                  )}
                   <div className="text-[8px] text-slate-500">{dist}px away</div>
                 </div>
               </div>
@@ -287,7 +368,7 @@ export const ProximitySimulator: React.FC<ProximitySimulatorProps> = ({
       <div className="mt-3 p-2.5 bg-slate-900/60 rounded-xl border border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs">
         <div className="flex items-center gap-2 text-slate-400">
           <Volume2 className="w-4 h-4 text-cyan-400" />
-          <span>Web Audio API <code className="text-indigo-300 font-mono">GainNode</code> & <code className="text-indigo-300 font-mono">StereoPannerNode</code> active.</span>
+          <span>Web Audio API <code className="text-indigo-300 font-mono">BiquadFilterNode</code> (Lowpass), <code className="text-indigo-300 font-mono">GainNode</code> & <code className="text-indigo-300 font-mono">StereoPannerNode</code> active.</span>
         </div>
         <div className="text-emerald-400 font-mono text-[11px] font-semibold bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
           Ready for Week 2 3D Avatar Coordinates (x, y, z)

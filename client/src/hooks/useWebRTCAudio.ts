@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { socket, socketService } from '../services/socket';
 import { WebRTCManager } from '../services/webrtcManager';
-import { computeSpatialAudio } from '../services/spatialAudio';
+import { computeSpatialAudio, evaluateOccludedSpatialAudio, detectAcousticZone, areZonesOccluded } from '../services/spatialAudio';
 import type {
   WebRTCOfferPayload,
   WebRTCAnswerPayload,
@@ -29,10 +29,15 @@ export interface UseWebRTCAudioResult {
   signalingLogs: SignalingLogEntry[];
   clearLogs: () => void;
   startCall: (peerId: string) => Promise<void>;
+  restartIce: (peerId: string) => Promise<boolean>;
   closeCall: (peerId: string) => void;
   setPeerVolume: (peerId: string, volume: number) => void;
-  setPeerSpatial: (peerId: string, volume: number, pan?: number) => void;
+  setPeerSpatial: (peerId: string, volume: number, pan?: number, cutoffHz?: number, smoothing?: number) => void;
   updateLocalPosition: (position: Position3D) => void;
+  updateLocalHeading: (headingRad: number) => void;
+  localHeadingRad: number;
+  culledPeerCount: number;
+  activeStreamCount: number;
   switchRoom: (roomId: string) => void;
   setAudioOutputDevice: (sinkId: string) => Promise<void>;
 }
@@ -43,7 +48,8 @@ export function useWebRTCAudio(
   isMuted: boolean = false,
   initialPosition: Position3D = { x: 500, y: 280, z: 0 },
   displayName = '',
-  joinEnabled = false
+  joinEnabled = false,
+  initialHeadingRad: number = 0
 ): UseWebRTCAudioResult {
   const [localSocketId, setLocalSocketId] = useState<string | null>(
     socket.id || null
@@ -59,6 +65,9 @@ export function useWebRTCAudio(
   const [peers, setPeers] = useState<Record<string, RemotePeerAudio>>({});
   const [localPosition, setLocalPosition] =
     useState<Position3D>(initialPosition);
+  const [localHeadingRad, setLocalHeadingRad] = useState<number>(initialHeadingRad);
+  const [culledPeerCount, setCulledPeerCount] = useState<number>(0);
+  const [activeStreamCount, setActiveStreamCount] = useState<number>(0);
   const [signalingLogs, setSignalingLogs] = useState<SignalingLogEntry[]>([]);
 
   const webrtcManagerRef = useRef<WebRTCManager | null>(null);
@@ -480,6 +489,14 @@ export function useWebRTCAudio(
       targetId?: string;
     }) => {
       addLog('in', 'webrtc:error', payload.message, payload);
+      if (payload.targetId) {
+        const targetId = payload.targetId;
+        const peer = peers[targetId];
+        if (peer && (peer.connectionState === 'failed' || peer.connectionState === 'disconnected')) {
+          console.warn(`[WebRTC] Initiating ICE restart for peer ${targetId} following error notification`);
+          void webrtcManagerRef.current?.restartIce(targetId);
+        }
+      }
     };
 
     const handleServerError = (payload: { message?: string }) => {
@@ -556,34 +573,136 @@ export function useWebRTCAudio(
   }, [isConnected]);
 
   // Automatically calculate and apply each remote user's audio gain
-  // whenever local or remote positions change.
+  // and manage WebRTC mesh spatial culling whenever positions change.
   useEffect(() => {
-    const spatialUpdates: Record<
-      string,
-      { volume: number; pan: number }
-    > = {};
+    const MAX_AUDIBLE_MESH_STREAMS = 6;
+    const CULLING_DISTANCE_THRESHOLD = 285; // Distance to suspend audio decoding (with hysteresis)
+    const CULLING_RECOVERY_THRESHOLD = 260; // Distance to resume audio decoding
+
+    interface PeerSpatialCandidate {
+      peerId: string;
+      distance: number;
+      isSpeaking: boolean;
+      volume: number;
+      pan: number;
+      cutoffHz: number;
+      wasCulled: boolean;
+    }
+
+    const candidates: PeerSpatialCandidate[] = [];
 
     Object.values(peers).forEach((peer) => {
       if (!peer.position) return;
 
-      const spatial = computeSpatialAudio(
+      const peerZone = detectAcousticZone(peer.position);
+      const localZone = detectAcousticZone(localPosition);
+      const isOccluded = areZonesOccluded(localZone, peerZone);
+
+      const spatial = evaluateOccludedSpatialAudio(
         localPosition,
-        0,
-        peer.position
+        localHeadingRad,
+        peer.position,
+        {
+          preset: localZone.preset,
+          isDifferentRoom: isOccluded,
+          wallCount: 1
+        }
       );
 
       const volume = Math.max(0, Math.min(1, spatial.volume));
       const pan = Math.max(-1, Math.min(1, spatial.pan));
+      const cutoffHz = spatial.cutoffFrequencyHz;
+      const distance = spatial.distance;
+      const wasCulled = Boolean(peer.isCulled);
 
-      spatialUpdates[peer.peerId] = { volume, pan };
-
-      // Apply gain through the manager's existing remote-audio path.
-      webrtcManagerRef.current?.setPeerSpatial(
-        peer.peerId,
+      candidates.push({
+        peerId: peer.peerId,
+        distance,
+        isSpeaking: Boolean(peer.isSpeaking),
         volume,
-        pan
-      );
+        pan,
+        cutoffHz,
+        wasCulled
+      });
     });
+
+    // 1. Identify candidates that must be culled due to distance / occlusion
+    const outOfRangeSet = new Set<string>();
+    candidates.forEach((cand) => {
+      // Hysteresis: if already culled, require entering <= 260; if active, allow until > 285
+      const isOutOfRange = cand.wasCulled
+        ? cand.distance > CULLING_RECOVERY_THRESHOLD
+        : cand.distance > CULLING_DISTANCE_THRESHOLD;
+
+      if (isOutOfRange || cand.volume <= 0.0001) {
+        outOfRangeSet.add(cand.peerId);
+      }
+    });
+
+    // 2. For remaining audible candidates, apply mesh concurrency limit
+    const inRangeCandidates = candidates.filter((c) => !outOfRangeSet.has(c.peerId));
+    inRangeCandidates.sort((a, b) => {
+      // Prioritize active speakers
+      if (a.isSpeaking !== b.isSpeaking) {
+        return a.isSpeaking ? -1 : 1;
+      }
+      // Then prioritize closer distance
+      return a.distance - b.distance;
+    });
+
+    const activeSet = new Set<string>();
+    inRangeCandidates.slice(0, MAX_AUDIBLE_MESH_STREAMS).forEach((c) => {
+      activeSet.add(c.peerId);
+    });
+
+    const spatialUpdates: Record<
+      string,
+      {
+        volume: number;
+        pan: number;
+        cutoffHz: number;
+        isCulled: boolean;
+        cullReason?: 'out-of-range' | 'mesh-limit' | 'occluded-silent';
+      }
+    > = {};
+
+    let culledCount = 0;
+    let activeCount = 0;
+
+    // 3. Dispatch spatial audio parameters and track culling to WebRTCManager
+    candidates.forEach((cand) => {
+      const isCulled = !activeSet.has(cand.peerId);
+      const cullReason = outOfRangeSet.has(cand.peerId)
+        ? (cand.volume <= 0.0001 && cand.distance <= CULLING_RECOVERY_THRESHOLD ? 'occluded-silent' : 'out-of-range')
+        : (isCulled ? 'mesh-limit' : undefined);
+
+      if (isCulled) {
+        culledCount++;
+      } else {
+        activeCount++;
+      }
+
+      spatialUpdates[cand.peerId] = {
+        volume: isCulled ? 0 : cand.volume,
+        pan: cand.pan,
+        cutoffHz: cand.cutoffHz,
+        isCulled,
+        cullReason
+      };
+
+      webrtcManagerRef.current?.setPeerCulled(cand.peerId, isCulled);
+      if (!isCulled) {
+        webrtcManagerRef.current?.setPeerSpatial(
+          cand.peerId,
+          cand.volume,
+          cand.pan,
+          cand.cutoffHz
+        );
+      }
+    });
+
+    setCulledPeerCount(culledCount);
+    setActiveStreamCount(activeCount);
 
     setPeers((previous) => {
       let changed = false;
@@ -595,12 +714,18 @@ export function useWebRTCAudio(
 
         if (
           Math.abs((existing.volume ?? 1) - spatial.volume) > 0.01 ||
-          Math.abs((existing.pan ?? 0) - spatial.pan) > 0.01
+          Math.abs((existing.pan ?? 0) - spatial.pan) > 0.01 ||
+          (spatial.cutoffHz && Math.abs((existing.cutoffFrequencyHz ?? 20000) - spatial.cutoffHz) > 50) ||
+          existing.isCulled !== spatial.isCulled ||
+          existing.cullReason !== spatial.cullReason
         ) {
           next[peerId] = {
             ...existing,
             volume: spatial.volume,
-            pan: spatial.pan
+            pan: spatial.pan,
+            cutoffFrequencyHz: spatial.cutoffHz ?? existing.cutoffFrequencyHz,
+            isCulled: spatial.isCulled,
+            cullReason: spatial.cullReason
           };
 
           changed = true;
@@ -609,7 +734,7 @@ export function useWebRTCAudio(
 
       return changed ? next : previous;
     });
-  }, [peers, localPosition]);
+  }, [peers, localPosition, localHeadingRad]);
 
   const startCall = useCallback(async (peerId: string) => {
     if (webrtcManagerRef.current) {
@@ -617,9 +742,34 @@ export function useWebRTCAudio(
     }
   }, []);
 
+  const restartIce = useCallback(async (peerId: string): Promise<boolean> => {
+    if (webrtcManagerRef.current) {
+      return await webrtcManagerRef.current.restartIce(peerId);
+    }
+    return false;
+  }, []);
+
   const closeCall = useCallback((peerId: string) => {
     webrtcManagerRef.current?.closePeer(peerId);
   }, []);
+
+  // Handle network reconnection recovery
+  useEffect(() => {
+    const handleOnline = () => {
+      addLog('in', 'user:join', 'Network reconnected. Verifying peer connections...');
+      Object.values(peers).forEach((peer) => {
+        if (peer.connectionState === 'failed' || peer.connectionState === 'disconnected') {
+          addLog('out', 'webrtc:offer', `Auto-recovering disconnected peer ${peer.peerId}`);
+          void webrtcManagerRef.current?.restartIce(peer.peerId);
+        }
+      });
+    };
+
+    window.addEventListener('online', handleOnline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+    };
+  }, [addLog, peers]);
 
   const setPeerVolume = useCallback((peerId: string, volume: number) => {
     const safeVolume = Math.max(0, Math.min(1, volume));
@@ -641,14 +791,16 @@ export function useWebRTCAudio(
   }, []);
 
   const setPeerSpatial = useCallback(
-    (peerId: string, volume: number, pan: number = 0) => {
+    (peerId: string, volume: number, pan: number = 0, cutoffHz?: number, smoothing?: number) => {
       const safeVolume = Math.max(0, Math.min(1, volume));
       const safePan = Math.max(-1, Math.min(1, pan));
 
       webrtcManagerRef.current?.setPeerSpatial(
         peerId,
         safeVolume,
-        safePan
+        safePan,
+        cutoffHz,
+        smoothing
       );
 
       setPeers((prev) => {
@@ -660,13 +812,18 @@ export function useWebRTCAudio(
           [peerId]: {
             ...existing,
             volume: safeVolume,
-            pan: safePan
+            pan: safePan,
+            cutoffFrequencyHz: typeof cutoffHz === 'number' ? cutoffHz : existing.cutoffFrequencyHz
           }
         };
       });
     },
     []
   );
+
+  const updateLocalHeading = useCallback((headingRad: number) => {
+    setLocalHeadingRad(headingRad);
+  }, []);
 
   const updateLocalPosition = useCallback(
     (position: Position3D) => {
@@ -719,10 +876,15 @@ export function useWebRTCAudio(
     signalingLogs,
     clearLogs,
     startCall,
+    restartIce,
     closeCall,
     setPeerVolume,
     setPeerSpatial,
     updateLocalPosition,
+    updateLocalHeading,
+    localHeadingRad,
+    culledPeerCount,
+    activeStreamCount,
     switchRoom,
     setAudioOutputDevice
   };

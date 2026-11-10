@@ -120,10 +120,16 @@ export interface RemotePeerAudio {
   volume: number;
   /** Stereo pan between -1.0 (full left) and 1.0 (full right) */
   pan?: number;
+  /** Acoustic low-pass frequency cutoff in Hz (e.g. 20000Hz down to 2000Hz) */
+  cutoffFrequencyHz?: number;
   isMuted: boolean;
   isSpeaking?: boolean;
   position?: Position3D;
   stats?: PeerAudioStats;
+  /** Whether stream decoding is culled to optimize WebRTC mesh performance */
+  isCulled?: boolean;
+  /** Reason for stream culling: distance boundary or concurrent speaker limit */
+  cullReason?: 'out-of-range' | 'mesh-limit' | 'occluded-silent';
 }
 
 export interface PeerAudioStats {
@@ -131,8 +137,12 @@ export interface PeerAudioStats {
   rttMs: number;
   jitterMs: number;
   packetsLost: number;
+  packetsReceived?: number;
+  packetLossPercent?: number;
   audioBitrateKbps: number;
   codec: string;
+  mos?: number;
+  qualityRating?: 'excellent' | 'good' | 'fair' | 'poor';
 }
 
 export interface SignalingPingPayload {

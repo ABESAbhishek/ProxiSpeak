@@ -1,6 +1,7 @@
 import React from 'react';
-import { Users, PhoneCall, PhoneOff, Volume2, ShieldCheck, Activity, Wifi, Radio } from 'lucide-react';
-import type { RemotePeerAudio, WebRTCConnectionState } from '../types';
+import { Users, PhoneCall, PhoneOff, Volume2, ShieldCheck, Activity, Wifi, Radio, MapPin, RefreshCw } from 'lucide-react';
+import type { Position3D, RemotePeerAudio, WebRTCConnectionState } from '../types';
+import { calculate3DDistance, detectAcousticZone, areZonesOccluded } from '../services/spatialAudio';
 
 interface PeerListProps {
   peers: Record<string, RemotePeerAudio>;
@@ -9,8 +10,12 @@ interface PeerListProps {
   isMicActive: boolean;
   onStartCall: (peerId: string) => void;
   onCloseCall: (peerId: string) => void;
+  onRestartIce?: (peerId: string) => void;
   onSetVolume: (peerId: string, volume: number) => void;
   onSwitchRoom: (roomId: string) => void;
+  localPosition?: Position3D;
+  culledPeerCount?: number;
+  activeStreamCount?: number;
 }
 
 export const PeerList: React.FC<PeerListProps> = ({
@@ -19,8 +24,12 @@ export const PeerList: React.FC<PeerListProps> = ({
   isMicActive,
   onStartCall,
   onCloseCall,
+  onRestartIce,
   onSetVolume,
-  onSwitchRoom
+  onSwitchRoom,
+  localPosition,
+  culledPeerCount,
+  activeStreamCount
 }) => {
   const peerEntries = Object.entries(peers);
 
@@ -40,11 +49,25 @@ export const PeerList: React.FC<PeerListProps> = ({
     }
   };
 
-  const getQualityBadge = (rttMs: number, jitterMs: number) => {
-    if (rttMs < 60 && jitterMs < 20) {
+  const getQualityBadge = (stats: { rttMs: number; jitterMs: number; mos?: number; qualityRating?: 'excellent' | 'good' | 'fair' | 'poor' }) => {
+    if (stats.mos !== undefined) {
+      const mos = stats.mos.toFixed(1);
+      switch (stats.qualityRating) {
+        case 'excellent':
+          return <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-mono">⭐ {mos} Excellent</span>;
+        case 'good':
+          return <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 font-mono">⭐ {mos} Good</span>;
+        case 'fair':
+          return <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 font-mono">⭐ {mos} Fair</span>;
+        case 'poor':
+        default:
+          return <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-300 border border-rose-500/30 font-mono">⭐ {mos} Poor</span>;
+      }
+    }
+    if (stats.rttMs < 60 && stats.jitterMs < 20) {
       return <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">Excellent</span>;
     }
-    if (rttMs < 150) {
+    if (stats.rttMs < 150) {
       return <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/30">Good</span>;
     }
     return <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-400 border border-rose-500/30">Fair</span>;
@@ -63,8 +86,17 @@ export const PeerList: React.FC<PeerListProps> = ({
           </div>
         </div>
 
-        {/* Room Switcher */}
-        <div className="flex items-center gap-2">
+        {/* Room Switcher & Mesh Guardrail Telemetry */}
+        <div className="flex items-center gap-2.5">
+          {typeof activeStreamCount === 'number' && peerEntries.length > 0 && (
+            <span
+              className="px-2 py-0.5 rounded text-[11px] font-mono bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 hidden sm:inline-flex items-center gap-1"
+              title="Spatial mesh audio optimization: decodes nearest speakers and culls distant peers"
+            >
+              <span>⚡ Mesh: {activeStreamCount} Active</span>
+              {culledPeerCount ? <span className="text-violet-300">({culledPeerCount} culled)</span> : null}
+            </span>
+          )}
           <span className="text-[11px] text-slate-400 font-mono hidden sm:inline">Room:</span>
           <select
             value={currentRoomId}
@@ -98,6 +130,12 @@ export const PeerList: React.FC<PeerListProps> = ({
             const stats = peer.stats;
             const isSpeaking = peer.isSpeaking;
             const isMuted = peer.isMuted;
+            const distance = (localPosition && peer.position)
+              ? Math.round(calculate3DDistance(localPosition, peer.position))
+              : null;
+            const peerZone = peer.position ? detectAcousticZone(peer.position) : null;
+            const localZone = localPosition ? detectAcousticZone(localPosition) : null;
+            const isOccluded = (localZone && peerZone) ? areZonesOccluded(localZone, peerZone) : false;
 
             return (
               <div
@@ -131,7 +169,53 @@ export const PeerList: React.FC<PeerListProps> = ({
                         )}
                         <span className="text-[11px] font-mono text-slate-400">ID: {peerId.substring(0, 8)}...</span>
                       </div>
-                      <div className="mt-0.5">{getConnectionBadge(peer.connectionState)}</div>
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                        {getConnectionBadge(peer.connectionState)}
+                        {distance !== null && (
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-[10px] font-mono border flex items-center gap-1 ${
+                              distance <= 90
+                                ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                                : distance <= 260
+                                ? 'bg-indigo-500/15 text-indigo-300 border-indigo-500/30'
+                                : 'bg-slate-800 text-slate-400 border-slate-700'
+                            }`}
+                            title={`3D Euclidean distance: ${distance} units`}
+                          >
+                            <MapPin className="w-2.5 h-2.5 text-indigo-400" />
+                            {distance}u
+                          </span>
+                        )}
+                        {peerZone && (
+                          <span
+                            className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-slate-800/90 text-slate-300 border border-slate-700/80 flex items-center gap-1"
+                            title={`Zone preset: ${peerZone.preset} (${peerZone.description})`}
+                          >
+                            <span>{peerZone.icon}</span>
+                            <span>{peerZone.name}</span>
+                          </span>
+                        )}
+                        {isOccluded && (
+                          <span
+                            className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1"
+                            title="Cross-zone partition wall dampens speech frequencies"
+                          >
+                            <span>🧱 Wall Occlusion</span>
+                          </span>
+                        )}
+                        {peer.isCulled && (
+                          <span
+                            className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-violet-500/15 text-violet-300 border border-violet-500/30 flex items-center gap-1"
+                            title={
+                              peer.cullReason === 'mesh-limit'
+                                ? 'Mesh guardrail: track decoding paused to prioritize active speakers'
+                                : 'Spatial culling: track decoding paused beyond audible range'
+                            }
+                          >
+                            <span>🔕 Culled ({peer.cullReason === 'mesh-limit' ? 'Mesh Limit' : 'Distant'})</span>
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
 
@@ -145,22 +229,33 @@ export const PeerList: React.FC<PeerListProps> = ({
                         <PhoneOff className="w-3.5 h-3.5 mr-1.5" /> End Call
                       </button>
                     ) : (
-                      <button
-                        onClick={() => onStartCall(peerId)}
-                        disabled={isConnecting}
-                        className="btn btn-sm btn-primary"
-                        title={!isMicActive ? 'Start audio call' : 'Start audio call'}
-                      >
-                        <PhoneCall className="w-3.5 h-3.5 mr-1.5" />
-                        {isConnecting ? 'Handshaking...' : 'Call Peer'}
-                      </button>
+                      <>
+                        {(peer.connectionState === 'failed' || peer.connectionState === 'disconnected') && onRestartIce && (
+                          <button
+                            onClick={() => onRestartIce(peerId)}
+                            className="btn btn-sm btn-warning flex items-center"
+                            title="Attempt ICE restart and reconnect"
+                          >
+                            <RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Reconnect
+                          </button>
+                        )}
+                        <button
+                          onClick={() => onStartCall(peerId)}
+                          disabled={isConnecting}
+                          className="btn btn-sm btn-primary"
+                          title={!isMicActive ? 'Start audio call' : 'Start audio call'}
+                        >
+                          <PhoneCall className="w-3.5 h-3.5 mr-1.5" />
+                          {isConnecting ? 'Handshaking...' : 'Call Peer'}
+                        </button>
+                      </>
                     )}
                   </div>
                 </div>
 
                 {/* Real-time WebRTC getStats Audio Quality Telemetry */}
                 {isConnected && stats && (
-                  <div className="mt-3 p-2.5 bg-slate-950/80 rounded-lg border border-slate-800/80 grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] font-mono">
+                  <div className="mt-3 p-2.5 bg-slate-950/80 rounded-lg border border-slate-800/80 grid grid-cols-2 sm:grid-cols-5 gap-2 text-[11px] font-mono">
                     <div className="flex items-center gap-1.5 text-slate-400">
                       <Wifi className="w-3 h-3 text-cyan-400" />
                       <span>RTT: <strong className="text-slate-200">{stats.rttMs}ms</strong></span>
@@ -170,12 +265,17 @@ export const PeerList: React.FC<PeerListProps> = ({
                       <span>Jitter: <strong className="text-slate-200">{stats.jitterMs}ms</strong></span>
                     </div>
                     <div className="flex items-center gap-1.5 text-slate-400">
-                      <Radio className="w-3 h-3 text-emerald-400" />
-                      <span>Bitrate: <strong className="text-slate-200">{stats.audioBitrateKbps}kbps</strong></span>
+                      <span className="text-rose-400 text-xs">📉</span>
+                      <span>Loss: <strong className={stats.packetLossPercent && stats.packetLossPercent > 2 ? 'text-rose-400' : 'text-slate-200'}>
+                        {typeof stats.packetLossPercent === 'number' ? `${stats.packetLossPercent}%` : `${stats.packetsLost}pkts`}
+                      </strong></span>
                     </div>
-                    <div className="flex items-center justify-between text-slate-400">
-                      <span>Codec: <strong className="text-slate-200 uppercase">{stats.codec}</strong></span>
-                      {getQualityBadge(stats.rttMs, stats.jitterMs)}
+                    <div className="flex items-center gap-1.5 text-slate-400">
+                      <Radio className="w-3 h-3 text-emerald-400" />
+                      <span>Bitrate: <strong className="text-slate-200">{stats.audioBitrateKbps}k</strong></span>
+                    </div>
+                    <div className="flex items-center justify-between sm:justify-end gap-1.5 text-slate-400 col-span-2 sm:col-span-1">
+                      {getQualityBadge(stats)}
                     </div>
                   </div>
                 )}
@@ -183,15 +283,39 @@ export const PeerList: React.FC<PeerListProps> = ({
                 {/* Audio Playback & Week 2 Proximity Volume Slider */}
                 <div className="mt-3 pt-3 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-3 text-xs">
                   <div className="flex items-center gap-2 text-slate-400">
-                    <Volume2 className={`w-4 h-4 ${isConnected ? 'text-emerald-400 animate-pulse' : 'text-slate-600'}`} />
+                    <Volume2 className={`w-4 h-4 ${peer.isCulled ? 'text-violet-400' : isConnected ? 'text-emerald-400 animate-pulse' : 'text-slate-600'}`} />
                     <span>
-                      {isConnected
+                      {peer.isCulled
+                        ? 'Spatial Culled (Bandwidth Optimized)'
+                        : isConnected
                         ? 'Bidirectional Audio Active (Low-latency WebRTC)'
                         : 'Audio Stream Disconnected'}
                     </span>
                   </div>
 
-                  <div className="flex items-center gap-2.5 ml-auto">
+                  <div className="flex items-center gap-2.5 ml-auto flex-wrap">
+                    {distance !== null && (
+                      <span className="text-[10px] text-slate-400 font-mono hidden sm:inline">
+                        {distance <= 30 ? 'Near-field (100%)' : distance <= 260 ? `Falloff (${Math.round((peer.volume ?? 1) * 100)}%)` : 'Silent / Beyond Range'}
+                      </span>
+                    )}
+                    {typeof peer.pan === 'number' && Math.abs(peer.pan) > 0.05 && (
+                      <span className="text-[10px] text-cyan-400 font-mono bg-cyan-500/10 px-1.5 py-0.5 rounded border border-cyan-500/20">
+                        {peer.pan > 0 ? `Pan R ${Math.round(peer.pan * 100)}%` : `Pan L ${Math.round(Math.abs(peer.pan) * 100)}%`}
+                      </span>
+                    )}
+                    {typeof peer.cutoffFrequencyHz === 'number' && (
+                      <span
+                        className={`text-[10px] font-mono px-1.5 py-0.5 rounded border ${
+                          peer.cutoffFrequencyHz < 3000
+                            ? 'text-amber-300 bg-amber-500/15 border-amber-500/30'
+                            : 'text-indigo-300 bg-indigo-500/10 border-indigo-500/20'
+                        }`}
+                        title="Web Audio API Lowpass Filter Cutoff"
+                      >
+                        {(peer.cutoffFrequencyHz / 1000).toFixed(1)} kHz
+                      </span>
+                    )}
                     <span className="text-[11px] text-slate-400 font-mono">
                       Volume: {Math.round((peer.volume ?? 1) * 100)}%
                     </span>

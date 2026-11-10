@@ -30,6 +30,8 @@ interface AudioControlsProps {
   onStart: (deviceId?: string) => void;
   onStop: () => void;
   onToggleMute: () => void;
+  micGain?: number;
+  onSetMicGain?: (gain: number) => void;
 }
 
 export const AudioControls: React.FC<AudioControlsProps> = ({
@@ -55,7 +57,9 @@ export const AudioControls: React.FC<AudioControlsProps> = ({
   errorMessage,
   onStart,
   onStop,
-  onToggleMute
+  onToggleMute,
+  micGain = 1.0,
+  onSetMicGain
 }) => {
   const getStatusBadge = () => {
     switch (status) {
@@ -251,6 +255,37 @@ export const AudioControls: React.FC<AudioControlsProps> = ({
               style={{ width: `${isMuted ? 0 : audioLevel}%` }}
             />
           </div>
+
+          {/* Mic Input Gain / Sensitivity Slider */}
+          {onSetMicGain && (
+            <div className="flex items-center justify-between gap-3 mb-3 p-2 bg-slate-950/60 rounded-lg border border-slate-800/80 text-xs">
+              <span className="text-[11px] text-slate-400 font-mono flex items-center gap-1.5">
+                <span>Mic Gain (Sensitivity):</span>
+                <strong className="text-indigo-300 font-bold">{Math.round(micGain * 100)}%</strong>
+              </span>
+              <div className="flex items-center gap-2 flex-1 max-w-[200px] ml-auto">
+                <input
+                  type="range"
+                  min="0"
+                  max="200"
+                  value={Math.round(micGain * 100)}
+                  onChange={(e) => onSetMicGain(Number(e.target.value) / 100)}
+                  className="volume-slider w-full"
+                  title="Microphone Input Gain (0% - 200%)"
+                />
+                {micGain !== 1.0 && (
+                  <button
+                    type="button"
+                    onClick={() => onSetMicGain(1.0)}
+                    className="text-[10px] text-slate-500 hover:text-indigo-400 font-mono underline"
+                    title="Reset gain to 100%"
+                  >
+                    100%
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* 8-band Real-time Frequency Spectrum */}
           <div className="space-y-1">

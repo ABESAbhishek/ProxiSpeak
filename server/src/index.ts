@@ -9,7 +9,7 @@ import { roomManager } from './roomManager';
 import { closePersistence, initializePersistence, persistUser } from './persistence';
 import mongoose from 'mongoose';
 import { UserModel } from './models/User';
-import { authRouter, authenticateSocketCookie, requiredAuth, setAuthSocketServer } from './auth';
+import { authRouter, authenticateSocketCookie, devAccounts, requiredAuth, setAuthSocketServer } from './auth';
 import { AccountModel } from './models/Account';
 import { AuthSessionModel } from './models/AuthSession';
 
@@ -49,11 +49,11 @@ app.get('/api/world', requiredAuth, (_req, res) => res.json({
   users: roomManager.getAllUsers().map(({ id, username, position, roomId, isMuted, avatarUrl }) => ({ id, username, position, roomId, isMuted, avatarUrl }))
 }));
 app.get('/api/rooms', requiredAuth, (_req, res) => res.json({ rooms: roomManager.getRoomSummaries() }));
-app.get('/api/team', requiredAuth, async (_req, res, next) => {
+app.get('/api/team', async (_req, res, next) => {
   try {
     const activeByAccount = new Map<string, { id: string; displayName: string; avatarUrl: string; status: 'active'; roomId: string; summary: string; lastSeenAt: string; joinedAt: string; isMuted: boolean; isSpeaking: boolean; sessionCount: number }>();
     roomManager.getAllUsers().forEach((user) => {
-      const id = user.accountId || user.id; const existing = activeByAccount.get(id);
+      const id = (user.accountId && !user.accountId.startsWith('guest-')) ? user.accountId : user.id; const existing = activeByAccount.get(id);
       const current = { id, displayName: user.username, avatarUrl: user.avatarUrl || '', status: 'active' as const, roomId: user.roomId,
         summary: user.activitySummary, lastSeenAt: new Date(user.lastActivityAt).toISOString(), joinedAt: new Date(user.joinedAt).toISOString(),
         isMuted: Boolean(user.isMuted), isSpeaking: Boolean(user.isSpeaking), sessionCount: (existing?.sessionCount || 0) + 1 };
@@ -63,7 +63,7 @@ app.get('/api/team', requiredAuth, async (_req, res, next) => {
     const active = Array.from(activeByAccount.values());
     const previousById = new Map<string, { id: string; displayName: string; avatarUrl: string; status: 'previous'; roomId: string; summary: string; lastSeenAt: string; joinedAt: string; isMuted: boolean; isSpeaking: boolean; sessionCount: number }>();
     roomManager.getRecentUsers().forEach((user) => {
-      const id = user.accountId || user.id;
+      const id = (user.accountId && !user.accountId.startsWith('guest-')) ? user.accountId : user.id;
       if (!previousById.has(id)) previousById.set(id, { id, displayName: user.username, avatarUrl: user.avatarUrl || '', status: 'previous', roomId: user.roomId,
         summary: user.activitySummary, lastSeenAt: new Date(user.lastActivityAt).toISOString(), joinedAt: new Date(user.joinedAt).toISOString(),
         isMuted: Boolean(user.isMuted), isSpeaking: Boolean(user.isSpeaking), sessionCount: 1 });
@@ -106,8 +106,25 @@ setAuthSocketServer(io);
 io.use(async (socket, next) => {
   try {
     const origin = socket.handshake.headers.origin;
-    if (!origin || !CLIENT_ORIGINS.includes(origin)) return next(new Error('Origin is not allowed.'));
-    if (mongoose.connection.readyState !== 1) return next(new Error('Account authentication requires MongoDB configuration.'));
+    if (origin && !CLIENT_ORIGINS.includes(origin)) return next(new Error('Origin is not allowed.'));
+    if (mongoose.connection.readyState !== 1) {
+      const identity = await authenticateSocketCookie(socket.handshake.headers.cookie);
+      if (identity) {
+        const acc = devAccounts.get(identity.accountId);
+        socket.data.accountId = identity.accountId;
+        socket.data.authSessionId = identity.sessionId;
+        socket.data.displayName = acc?.fullName || 'User';
+        socket.data.username = acc?.username || 'user';
+        socket.data.avatarUrl = acc?.avatarUrl || '';
+        return next();
+      }
+      socket.data.accountId = `guest-${socket.id}`;
+      socket.data.authSessionId = `guest-session-${socket.id}`;
+      socket.data.displayName = (socket.handshake.auth?.username as string) || `User_${socket.id.slice(0, 4)}`;
+      socket.data.username = ((socket.handshake.auth?.username as string) || `user_${socket.id.slice(0, 4)}`).toLowerCase();
+      socket.data.avatarUrl = '';
+      return next();
+    }
     const identity = await authenticateSocketCookie(socket.handshake.headers.cookie);
     if (!identity) return next(new Error('Authentication required. Please sign in again.'));
     const account = await AccountModel.findById(identity.accountId).select('fullName username avatarUrl emailVerified');
@@ -139,6 +156,7 @@ io.on('connection', (socket: Socket) => {
   let movementTimes: number[] = [];
 
   socket.use((packet, next) => {
+    if (mongoose.connection.readyState !== 1) return next();
     void AuthSessionModel.findOne({ _id: socket.data.authSessionId, expiresAt: { $gt: new Date() } }).then((session) => {
       if (!session) { socket.disconnect(true); next(new Error('Session expired.')); return; }
       next();
@@ -152,9 +170,11 @@ io.on('connection', (socket: Socket) => {
     };
     if (!data || typeof data !== 'object') return rejectJoin('Invalid join payload.');
     const payload = data as Record<string, unknown>;
+    const hasExplicitName = 'username' in payload || 'displayName' in payload;
     const requestedName = typeof payload.username === 'string' ? payload.username.trim() :
       typeof payload.displayName === 'string' ? payload.displayName.trim() : '';
-    const username = typeof socket.data.displayName === 'string' ? socket.data.displayName : requestedName;
+    if (hasExplicitName && !requestedName) return rejectJoin('Display name must contain 1–32 printable characters.');
+    const username = (mongoose.connection.readyState !== 1 && requestedName) ? requestedName : (typeof socket.data.displayName === 'string' ? socket.data.displayName : requestedName);
     const position = payload.position ?? { x: 500, y: 280, z: 0 };
     const roomId = payload.roomId ?? roomManager.DEFAULT_ROOM;
     if (!username || username.length > 32 || /[\u0000-\u001f\u007f-\u009f]/.test(username)) return rejectJoin('Display name must contain 1–32 printable characters.');
@@ -226,6 +246,7 @@ io.on('connection', (socket: Socket) => {
 });
 
 const sessionSweepTimer = setInterval(() => {
+  if (mongoose.connection.readyState !== 1) return;
   io.sockets.sockets.forEach((socket) => {
     const sessionId = socket.data.authSessionId as string | undefined;
     if (!sessionId) { socket.disconnect(true); return; }

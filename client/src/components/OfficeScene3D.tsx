@@ -9,6 +9,7 @@ type OfficeScene3DProps = {
   displayName: string;
   avatarUrl?: string;
   onMove: (position: Position3D) => void;
+  onHeadingChange?: (headingRad: number) => void;
   peers: RemotePeerAudio[];
   isLocationTracking: boolean;
   theme: 'dark' | 'light';
@@ -227,16 +228,18 @@ const MovingLocalAvatar: React.FC<{
   displayName: string;
   avatarUrl?: string;
   onMove: (position: Position3D) => void;
+  onHeadingChange?: (headingRad: number) => void;
   isLocationTracking: boolean;
   onSelect: () => void;
   accentColor: string;
   speakingColor: string;
-}> = ({ position, displayName, avatarUrl, onMove, isLocationTracking, onSelect, accentColor, speakingColor }) => {
+}> = ({ position, displayName, avatarUrl, onMove, onHeadingChange, isLocationTracking, onSelect, accentColor, speakingColor }) => {
   const avatar = useRef<THREE.Group>(null);
   const target = useRef(toWorld(position));
   const keys = useRef(new Set<string>());
   const reportElapsed = useRef(0);
   const lastReported = useRef(toWorld(position));
+  const lastReportedHeading = useRef(0);
   const previousPosition = useRef(position);
   const wasTracking = useRef(isLocationTracking);
 
@@ -307,10 +310,12 @@ const MovingLocalAvatar: React.FC<{
     node.position.z = THREE.MathUtils.damp(node.position.z, target.current.z, 12, safeDelta);
     reportElapsed.current += safeDelta;
 
-    if (!isLocationTracking && reportElapsed.current >= 0.1 && node.position.distanceTo(lastReported.current) >= 0.035) {
+    if (!isLocationTracking && reportElapsed.current >= 0.1 && (node.position.distanceTo(lastReported.current) >= 0.035 || Math.abs(node.rotation.y - lastReportedHeading.current) >= 0.08)) {
       reportElapsed.current = 0;
       lastReported.current.copy(node.position);
+      lastReportedHeading.current = node.rotation.y;
       onMove(toOfficePosition(node.position));
+      onHeadingChange?.(node.rotation.y);
     }
   });
 
@@ -321,7 +326,7 @@ const MovingLocalAvatar: React.FC<{
   );
 };
 
-const OfficeContents: React.FC<OfficeScene3DProps & { onReady: () => void }> = ({ position, displayName, avatarUrl, onMove, peers, isLocationTracking, theme, selectedParticipantId, onSelectParticipant, onReady }) => {
+const OfficeContents: React.FC<OfficeScene3DProps & { onReady: () => void }> = ({ position, displayName, avatarUrl, onMove, onHeadingChange, peers, isLocationTracking, theme, selectedParticipantId, onSelectParticipant, onReady }) => {
   const localWorld = useMemo(() => toWorld(position), [position]);
   const audiblePeers = peers.filter((peer) => peer.position);
   const selectedParticipant = audiblePeers.find((peer) => peer.peerId === selectedParticipantId);
@@ -384,7 +389,7 @@ const OfficeContents: React.FC<OfficeScene3DProps & { onReady: () => void }> = (
         <ringGeometry args={[0.6, NEARBY_DISTANCE * SCALE, 64]} />
         <meshBasicMaterial color={palette.local} transparent opacity={0.12} side={THREE.DoubleSide} />
       </mesh>
-      <MovingLocalAvatar position={position} displayName={displayName} avatarUrl={avatarUrl} onMove={onMove} isLocationTracking={isLocationTracking} onSelect={() => onSelectParticipant(null)} accentColor={palette.local} speakingColor={palette.teammate} />
+      <MovingLocalAvatar position={position} displayName={displayName} avatarUrl={avatarUrl} onMove={onMove} onHeadingChange={onHeadingChange} isLocationTracking={isLocationTracking} onSelect={() => onSelectParticipant(null)} accentColor={palette.local} speakingColor={palette.teammate} />
 
       {audiblePeers.map((peer) => {
         const point = toWorld(peer.position!);
