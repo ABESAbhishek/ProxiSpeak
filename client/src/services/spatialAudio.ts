@@ -412,6 +412,7 @@ export interface OcclusionOptions {
   preset?: keyof typeof SPATIAL_PRESETS;
   isDifferentRoom?: boolean;
   wallCount?: number;
+  obstacles?: AudioObstacle[];
 }
 
 /**
@@ -425,7 +426,13 @@ export function evaluateOccludedSpatialAudio(
   options: OcclusionOptions = {}
 ): SpatialAudioResult {
   const config = options.config || (options.preset ? SPATIAL_PRESETS[options.preset] : DEFAULT_SPATIAL_CONFIG);
-  const base = computeSpatialAudio(listenerPos, listenerHeadingRad, sourcePos, config);
+  const base = computeSpatialAudio(
+    listenerPos,
+    listenerHeadingRad,
+    sourcePos,
+    config,
+    options.obstacles ?? []
+  );
 
   if (!options.isDifferentRoom) {
     return base;

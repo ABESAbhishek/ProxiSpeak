@@ -283,25 +283,11 @@ const auditoriumMid = calculateAttenuation(450, SPATIAL_PRESETS.auditorium);
 assert(auditoriumMid > 0.45 && auditoriumMid < 0.55, 'Auditorium preset must preserve voice carrying power at distance 450');
 console.log(`[PASS] Auditorium acoustic preset: carry factor at 450 units = ${Math.round(auditoriumMid * 100)}%`);
 
-// 7. Full Unified Occluded Spatial Audio Pipeline
-function computeSpatialAudio(listenerPos, listenerHeadingRad, sourcePos, config = SPATIAL_PRESETS.normal) {
-  const distance = calculate3DDistance(listenerPos, sourcePos);
-  const volume = calculateAttenuation(distance, config);
-  const { pan, azimuthDeg } = calculateStereoPanAndAzimuth(listenerPos, listenerHeadingRad, sourcePos);
-  const cutoffFrequencyHz = calculateAcousticCutoffFrequency(distance, config.maxDistance);
-
-  return {
-    distance: Math.round(distance * 10) / 10,
-    volume: Math.round(volume * 100) / 100,
-    pan: Math.round(pan * 100) / 100,
-    azimuthDeg,
-    cutoffFrequencyHz
-  };
-}
+// 7. Full Unified Occluded Spatial Audio Pipeline (uses imported computeSpatialAudio from client/src/services/spatialAudio.ts)
 
 function evaluateOccludedSpatialAudio(listenerPos, listenerHeadingRad, sourcePos, options = {}) {
   const config = options.config || (options.preset ? SPATIAL_PRESETS[options.preset] : SPATIAL_PRESETS.normal);
-  const base = computeSpatialAudio(listenerPos, listenerHeadingRad, sourcePos, config);
+  const base = computeSpatialAudio(listenerPos, listenerHeadingRad, sourcePos, config, options.obstacles ?? []);
 
   if (!options.isDifferentRoom) return base;
 
