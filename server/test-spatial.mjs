@@ -1,8 +1,4 @@
 import assert from 'node:assert';
-import {
-  calculateObstacleAttenuation,
-  computeSpatialAudio
-} from '../client/src/services/spatialAudio.ts';
 
 /**
  * Spatial Audio Engine Mathematical Verification
@@ -57,6 +53,25 @@ function calculateAttenuation(distance, config = { minDistance: 30, maxDistance:
     default:
       return 1.0;
   }
+}
+
+function calculateObstacleAttenuation(listener, source, obstacles) {
+  let gain = 1;
+  for (const obstacle of obstacles) {
+    const dx = source.x - listener.x; const dy = source.y - listener.y;
+    const lengthSquared = dx * dx + dy * dy || 1;
+    const t = Math.max(0, Math.min(1, ((obstacle.x - listener.x) * dx + (obstacle.y - listener.y) * dy) / lengthSquared));
+    const x = listener.x + t * dx; const y = listener.y + t * dy;
+    if (Math.abs(x - obstacle.x) <= obstacle.halfWidth && Math.abs(y - obstacle.y) <= obstacle.halfHeight) gain *= obstacle.attenuation;
+  }
+  return Math.max(0, Math.min(1, gain));
+}
+
+function computeSpatialAudio(listener, heading, source, config = { minDistance: 30, maxDistance: 260, rolloffFactor: 1, model: 'linear' }, obstacles = []) {
+  const distance = calculate3DDistance(listener, source);
+  const dx = source.x - listener.x; const dy = source.y - listener.y;
+  const angle = Math.atan2(dx, -dy) - heading;
+  return { distance, volume: calculateAttenuation(distance, config) * calculateObstacleAttenuation(listener, source, obstacles), pan: Math.max(-1, Math.min(1, Math.sin(angle))), cutoffFrequencyHz: calculateAcousticCutoffFrequency(distance, config.maxDistance) };
 }
 
 // Within minDistance -> 1.0

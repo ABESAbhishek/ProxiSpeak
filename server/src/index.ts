@@ -12,12 +12,16 @@ import { UserModel } from './models/User';
 import { authRouter, authenticateSocketCookie, devAccounts, requiredAuth, setAuthSocketServer } from './auth';
 import { AccountModel } from './models/Account';
 import { AuthSessionModel } from './models/AuthSession';
+import { getAllowedClientOrigins } from './deploymentOrigins';
+import { createWorkspaceLayoutRouter } from './workspaceLayout';
+import { closeRedisAdapter, configureRedisAdapter, RedisMode } from './redisAdapter';
 
 const app = express();
 const PORT = Number(process.env.PORT || 3001);
-const CLIENT_ORIGINS = (process.env.CLIENT_ORIGIN || 'http://localhost:5173')
-  .split(',').map((origin) => origin.trim()).filter(Boolean);
+const CLIENT_ORIGINS = getAllowedClientOrigins();
 const startTime = Date.now();
+const persistenceReady = initializePersistence();
+let redisMode: RedisMode = process.env.REDIS_URL ? 'unavailable' : 'disabled';
 const corsOptions: cors.CorsOptions = {
   credentials: true,
   origin(origin, callback) {
@@ -29,6 +33,7 @@ const corsOptions: cors.CorsOptions = {
 
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '32kb' }));
+app.use((_req, _res, next) => { void persistenceReady.then(() => next()).catch(next); });
 app.use((_req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
@@ -42,7 +47,9 @@ app.get('/health', (_req, res) => res.json({
   status: 'ok', service: 'ProxiSpeak Backend & Signaling Server',
   uptimeSeconds: Math.floor((Date.now() - startTime) / 1000),
   activeUsers: roomManager.getTotalUsersCount(), activeRooms: roomManager.getRoomSummaries().length,
-  persistence: process.env.MONGODB_URI ? 'configured' : 'disabled', timestamp: new Date().toISOString()
+  persistence: process.env.MONGODB_URI ? 'configured' : 'disabled',
+  redis: redisMode,
+  timestamp: new Date().toISOString()
 }));
 app.get('/api/world', requiredAuth, (_req, res) => res.json({
   totalUsers: roomManager.getTotalUsersCount(),
@@ -100,6 +107,11 @@ const io = new Server(server, {
   cors: { ...corsOptions, credentials: true },
   pingInterval: 10000,
   pingTimeout: 5000
+});
+app.use('/api/workspaces', createWorkspaceLayoutRouter(io));
+app.use((error: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error(`[Workspace] ${error.message}`);
+  res.status(500).json({ error: 'Internal server error' });
 });
 setAuthSocketServer(io);
 
@@ -261,16 +273,21 @@ server.on('error', (error) => { console.error('[Server] HTTP server error:', err
 function shutdown() {
   console.log('[Server] Shutting down...');
   clearInterval(sessionSweepTimer);
-  io.close(() => { void closePersistence().finally(() => process.exit(0)); });
+  io.close(() => { void Promise.all([closePersistence(), closeRedisAdapter()]).finally(() => process.exit(0)); });
   setTimeout(() => process.exit(1), 10000).unref();
 }
 process.once('SIGTERM', shutdown);
 process.once('SIGINT', shutdown);
 dns.setServers(['8.8.8.8', '1.1.1.1']);
-initializePersistence().then(() => {
-  server.listen(PORT, () => console.log(`ProxiSpeak server listening on http://localhost:${PORT} (CORS: ${CLIENT_ORIGINS.join(', ')})`));
-}).catch((error: unknown) => {
+if (process.env.VERCEL !== '1') {
+  persistenceReady.then(async () => {
+    redisMode = await configureRedisAdapter(io);
+    server.listen(PORT, () => console.log(`ProxiSpeak server listening on http://localhost:${PORT} (CORS: ${CLIENT_ORIGINS.join(', ')}, Redis: ${redisMode})`));
+  }).catch((error: unknown) => {
   const message = error instanceof Error ? error.message : 'unknown MongoDB connection error';
   console.error(`[Persistence] MongoDB is configured but unavailable: ${message}`);
   process.exitCode = 1;
-});
+  });
+}
+
+export default server;

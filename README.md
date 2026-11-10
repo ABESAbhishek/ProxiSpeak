@@ -6,6 +6,7 @@ ProxiSpeak is a shared virtual office with account-backed profiles, authenticate
 
 - Node.js 20+ and npm
 - MongoDB 6+ (required for accounts and authenticated workspace sessions)
+- Redis 7+ (optional; required only when running more than one backend instance)
 
 ## Install and configure
 
@@ -18,13 +19,11 @@ Copy `server/.env.example` to `server/.env` and `client/.env.example` to `client
 
 For MongoDB, run a local MongoDB service or create a database with MongoDB Atlas and put its connection URI in `server/.env`. Keep credentials in local environment files; do not commit them. A configured but unreachable MongoDB prevents the backend from starting. Set `SESSION_SECRET` and `OTP_SECRET` to independent random strings with at least 32 characters. Sessions use an HttpOnly, SameSite=Strict cookie, server-side session records, 30-minute idle expiry and a warning at 28 minutes by default. Override `SESSION_IDLE_TIMEOUT_MINUTES` and `SESSION_WARNING_MINUTES` to change the timing. Production must use HTTPS so the cookie receives the Secure flag.
 
-### Email and Google sign-in setup
+### Email sign-in setup
 
-Email verification, email OTP sign-in, password recovery and email changes use Resend's email API. Add a Resend API key and a verified sender address as `RESEND_API_KEY` and `EMAIL_FROM`. Until these values are configured, email-based registration and sign-in clearly report that email delivery is unavailable. Codes are random six-digit values, stored as a keyed SHA-256 digest with five-minute expiration, one-time use, a 60-second resend cooldown, and five verification attempts.
+Email verification, email OTP sign-in, password recovery and email changes use the Resend Node SDK. Configure server-side `RESEND_API_KEY`, `RESEND_FROM`, `RESEND_OTP_TEMPLATE_ID`, and `OTP_SECRET`; create a Resend email template with an `OTP_CODE` variable. Sender addresses must use a verified domain. For sandbox-only local testing, set `RESEND_FROM=onboarding@resend.dev` and `RESEND_TEST_RECIPIENT` to the Resend account owner's permitted test address; the server rejects other recipients. Until these values are configured, email flows return a configuration error. OTPs are random six-digit values, stored only as HMAC digests with five-minute expiration, atomic single-use consumption, a 60-second resend cooldown, five verification attempts, and per-IP request limits.
 
-For Google sign-in, create a Google Cloud OAuth 2.0 Web application client. Set its authorized redirect URI to the exact `GOOGLE_CALLBACK_URL` (for local development, `http://localhost:3001/api/auth/google/callback`) and its authorized JavaScript origin to the exact `CLIENT_ORIGIN`. Put the client ID and secret only in `server/.env`. Configure `APP_BASE_URL` to the client origin. The server exchanges the authorization code and reads Google's verified OpenID Connect user profile; it does not accept a profile from the browser. OAuth state is single-use, short-lived, and browser-bound by a SameSite cookie.
-
-Passwords use Node's built-in scrypt KDF with per-account random salts and fixed memory-hard parameters; session tokens are random, stored only as HMAC digests, and never put in browser storage. Session revocation disconnects that session's sockets; periodic server sweeps and per-event checks reject expired sessions. Account profile routes, team, world, and room APIs and signaling sockets require an authenticated session. `AUTHORIZED_ROOM_IDS` controls the server allowlist (defaults to `global-space`); room membership and peer signaling are checked server-side. Email changes take effect only after verifying the new address. Profile updates cannot change account verification or provider fields.
+Passwords use Argon2id with per-account salts; existing scrypt hashes remain verifiable for accounts created before the upgrade. Session tokens are random, stored only as HMAC digests, and never put in browser storage. Session revocation disconnects that session's sockets; periodic server sweeps and per-event checks reject expired sessions. Account profile routes, team, world, and room APIs and signaling sockets require an authenticated session. `AUTHORIZED_ROOM_IDS` controls the server allowlist (defaults to `global-space`); room membership and peer signaling are checked server-side. Email changes take effect only after verifying the new address. Profile updates cannot change account verification.
 
 ## Run
 
@@ -61,6 +60,12 @@ socket.on('server:error', ({ message }) => { /* rejected payload */ });
 ```
 
 The planar office bounds are `x: 0–1000`, `y: 0–560`, and `z: -50–50`. Movement is capped at 30 events per second per socket. `world:state` includes the joining user; remote-avatar consumers filter their own server socket ID. Existing `user:update-profile`, room sync, ping/pong, and WebRTC events remain available.
+
+## Workspace layouts and Redis
+
+`GET /api/workspaces/:roomId` loads the persisted furniture and sound-blocking obstacles for an authenticated room member. `PUT /api/workspaces/:roomId` accepts validated layout data; the account that creates a room layout owns future updates. Layout changes publish `workspace:layout` to room clients. The 3D scene loads persisted furniture and obstacles, and its spatial gain applies each crossed sound-blocking obstacle's `soundDamping` factor.
+
+Set `REDIS_URL` and install `redis` plus `@socket.io/redis-adapter` in the server package to run multiple backend instances. On startup, `/health` reports `redis: connected`, `disabled`, or `unavailable`. `disabled` and `unavailable` mean the server is single-instance only. To test cross-instance traffic, start Redis, run two servers with different `PORT` values and the same `REDIS_URL`, then connect authenticated browser sessions through each server and verify join, position, and WebRTC signaling events arrive in the shared room.
 
 ## Team members page
 

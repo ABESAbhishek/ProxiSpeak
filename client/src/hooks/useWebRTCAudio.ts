@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { socket, socketService } from '../services/socket';
 import { WebRTCManager } from '../services/webrtcManager';
-import { computeSpatialAudio, evaluateOccludedSpatialAudio, detectAcousticZone, areZonesOccluded } from '../services/spatialAudio';
+import { evaluateOccludedSpatialAudio, detectAcousticZone, areZonesOccluded } from '../services/spatialAudio';
 import type {
   WebRTCOfferPayload,
   WebRTCAnswerPayload,

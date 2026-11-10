@@ -1,7 +1,7 @@
 import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity, AudioLines, ChevronDown, Headphones, LayoutDashboard, LocateFixed,
-  MapPin, Mic, MicOff, Moon, PanelRightClose, PanelRightOpen, Radio, Settings2, ShieldCheck, Sun, Users, Volume2, Wifi,
+  MapPin, Mic, MicOff, Moon, PanelRightClose, PanelRightOpen, Radio, Settings2, ShieldCheck, Sparkles, Sun, Users, Volume2, Wifi,
 } from 'lucide-react';
 import { useMicrophone } from './hooks/useMicrophone';
 import { useWebRTCAudio } from './hooks/useWebRTCAudio';
@@ -13,13 +13,16 @@ import { TeamMembersPage } from './components/TeamMembersPage';
 import { WorkspaceSidebar } from './components/WorkspaceSidebar';
 import { AuthPage } from './components/AuthPage';
 import { AccountPage } from './components/AccountPage';
+import { DemoProfilePage } from './components/DemoProfilePage';
 import { authRequest } from './services/authApi';
 import type { AccountProfile } from './services/authApi';
-import { evaluateOccludedSpatialAudio, detectAcousticZone, areZonesOccluded } from './services/spatialAudio';
+import { calculateObstacleGain, evaluateOccludedSpatialAudio, detectAcousticZone, areZonesOccluded } from './services/spatialAudio';
 import { ProximitySimulator } from './components/ProximitySimulator';
 import { deriveActiveDiscussions } from './services/workspacePresence';
 import type { WorkspaceMember } from './services/workspacePresence';
-import { socketService } from './services/socket';
+import { socket, socketService } from './services/socket';
+import { loadWorkspaceLayout } from './services/workspaceLayout';
+import type { OfficeLayout } from './services/workspaceLayout';
 import type { Position3D } from './types';
 
 const OfficeScene3D = lazy(() => import('./components/OfficeScene3D'));
@@ -34,7 +37,7 @@ const hasControlCharacters = (value: string) => {
 
 export const App: React.FC = () => {
   const [showDiagnostics, setShowDiagnostics] = useState(false);
-  const [activePage, setActivePage] = useState<'office' | 'team' | 'account'>('office');
+  const [activePage, setActivePage] = useState<'office' | 'team' | 'account' | 'demo'>('office');
   const [account, setAccount] = useState<AccountProfile | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [sessionExpired, setSessionExpired] = useState(false);
@@ -59,6 +62,7 @@ export const App: React.FC = () => {
   const locationOrigin = useRef<{ latitude: number; longitude: number } | null>(null);
   const [localPosition, setLocalPosition] = useState<Position3D>({ x: 500, y: 269, z: 0 });
   const [localHeadingRad, setLocalHeadingRad] = useState<number>(0);
+  const [officeLayout, setOfficeLayout] = useState<OfficeLayout | null>(null);
   const manualPeerVolumes = useRef<Record<string, number>>({});
   const appliedSpatial = useRef<Record<string, { volume: number; pan: number; cutoffHz: number }>>({});
 
@@ -123,6 +127,21 @@ export const App: React.FC = () => {
       if (!alive) return; setAccount(user); setDisplayName(user.fullName); setLastActivityAt(Date.now() - session.idleMs); if (session.idleTimeoutMs) setSessionTimeoutMs(session.idleTimeoutMs); if (session.warningMs) setSessionWarningMs(session.warningMs);
     }).catch((error: unknown) => { if (alive) { setAccount(null); setDisplayName(''); setSessionExpired(error instanceof Error && error.message.toLowerCase().includes('expired')); } }).finally(() => { if (alive) setAuthLoading(false); });
     return () => { alive = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!account) { setOfficeLayout(null); return; }
+    let active = true;
+    void loadWorkspaceLayout('global-space').then((layout) => { if (active) setOfficeLayout(layout); }).catch(() => { if (active) setOfficeLayout(null); });
+    return () => { active = false; };
+  }, [account]);
+
+  useEffect(() => {
+    const applyLayout = (layout: OfficeLayout) => {
+      if (layout?.roomId === 'global-space') setOfficeLayout(layout);
+    };
+    socket.on('workspace:layout', applyLayout);
+    return () => { socket.off('workspace:layout', applyLayout); };
   }, []);
 
   useEffect(() => {
@@ -314,7 +333,8 @@ export const App: React.FC = () => {
         }
       );
 
-      const volume = spatial.volume * manualPeerVolumes.current[peer.peerId];
+      const obstacleGain = calculateObstacleGain(localPosition, peer.position, officeLayout?.obstacles ?? []);
+      const volume = spatial.volume * obstacleGain * manualPeerVolumes.current[peer.peerId];
       const previous = appliedSpatial.current[peer.peerId];
       if (
         !previous ||
@@ -330,7 +350,7 @@ export const App: React.FC = () => {
     Object.keys(appliedSpatial.current).forEach((peerId) => {
       if (!activeIds.has(peerId)) delete appliedSpatial.current[peerId];
     });
-  }, [currentAcousticZone, localHeadingRad, localPosition, peerList, setPeerSpatial]);
+  }, [currentAcousticZone, localHeadingRad, localPosition, officeLayout?.obstacles, peerList, setPeerSpatial]);
 
   const toggleLocationSharing = () => {
     locationOrigin.current = null;
@@ -436,9 +456,10 @@ export const App: React.FC = () => {
         </header>
 
         <div className={`app-layout mx-auto grid max-w-[1800px] grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] ${activePage !== 'office' ? '2xl:grid-cols-[220px_minmax(0,1fr)]' : isWorkspacePanelCollapsed ? '2xl:grid-cols-[220px_minmax(0,1fr)_60px]' : '2xl:grid-cols-[220px_minmax(0,1fr)_320px]'}`}>
-          <nav aria-label="Workspace pages" className="flex gap-2 border-b border-[#8c62451c] bg-[#f8f1e8]/90 px-4 py-3 lg:hidden">
+          <nav aria-label="Workspace pages" className="flex gap-2 overflow-x-auto border-b border-[#8c62451c] bg-[#f8f1e8]/90 px-4 py-3 lg:hidden">
             <button type="button" onClick={() => setActivePage('office')} className={`flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-semibold ${activePage === 'office' ? 'bg-[#c96e5115] text-[#a7533b]' : 'text-[#887665]'}`}><LayoutDashboard size={15} />Office</button>
             <button type="button" onClick={() => setActivePage('team')} className={`flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-semibold ${activePage === 'team' ? 'bg-[#c96e5115] text-[#a7533b]' : 'text-[#887665]'}`}><Users size={15} />Team members <span className="rounded-md bg-white/70 px-1.5 py-0.5 text-[10px]">{participantCount}</span></button><button type="button" onClick={() => setActivePage('account')} className={`flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-semibold ${activePage === 'account' ? 'bg-[#c96e5115] text-[#a7533b]' : 'text-[#887665]'}`}><ShieldCheck size={15} />Profile</button>
+            <button type="button" onClick={() => setActivePage('demo')} className={`flex shrink-0 items-center gap-2 rounded-xl px-3 py-2 text-xs font-semibold ${activePage === 'demo' ? 'bg-[#c96e5115] text-[#a7533b]' : 'text-[#887665]'}`}><Sparkles size={15} />Demo profile</button>
           </nav>
           {/* Sidebar */}
           <aside className="app-sidebar hidden border-r border-white/[0.06] px-4 py-7 lg:block">
@@ -460,6 +481,7 @@ export const App: React.FC = () => {
                 </span>
               </button>
               <button type="button" onClick={() => setActivePage('account')} aria-current={activePage === 'account' ? 'page' : undefined} className={`flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm transition ${activePage === 'account' ? 'border border-[#bf73541f] bg-[#c96e5115] font-medium text-[#a7533b]' : 'text-[#887665] hover:bg-white/50 hover:text-[#574538]'}`}><ShieldCheck size={17} />My profile</button>
+              <button type="button" onClick={() => setActivePage('demo')} aria-current={activePage === 'demo' ? 'page' : undefined} className={`flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm transition ${activePage === 'demo' ? 'border border-[#bf73541f] bg-[#c96e5115] font-medium text-[#a7533b]' : 'text-[#887665] hover:bg-white/50 hover:text-[#574538]'}`}><Sparkles size={17} />Demo profile</button>
 
               <button
                 type="button"
@@ -502,7 +524,7 @@ export const App: React.FC = () => {
 
           {/* Main workspace */}
           <main className="app-main min-w-0 px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
-            {activePage === 'team' ? <TeamMembersPage isConnected={isConnected} localUserId={account.id} displayName={displayName} onSaveDisplayName={saveDisplayName} /> : activePage === 'account' ? <AccountPage profile={account} onProfile={saveAccountProfile} onLogout={() => { void signOut(); }} /> : <>
+            {activePage === 'team' ? <TeamMembersPage isConnected={isConnected} localUserId={account.id} displayName={displayName} onSaveDisplayName={saveDisplayName} /> : activePage === 'account' ? <AccountPage profile={account} onProfile={saveAccountProfile} onLogout={() => { void signOut(); }} /> : activePage === 'demo' ? <DemoProfilePage onBack={() => setActivePage('office')} /> : <>
               {/* Page heading */}
               <section className="mb-7 flex flex-col justify-between gap-5 xl:flex-row xl:items-end">
                 <div>
@@ -600,6 +622,7 @@ export const App: React.FC = () => {
                         onMove={reportLocalPosition}
                         onHeadingChange={(rad) => { setLocalHeadingRad(rad); updateLocalHeading(rad); }}
                         peers={peerList}
+                        layout={officeLayout}
                         isLocationTracking={location.enabled}
                         theme={theme}
                         selectedParticipantId={visibleSelectedMemberId === localSocketId ? null : visibleSelectedMemberId}

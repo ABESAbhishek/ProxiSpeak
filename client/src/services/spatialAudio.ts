@@ -218,6 +218,30 @@ export function calculateOcclusionDamping(
   return { volumeMultiplier, lowpassCutoffHz };
 }
 
+export interface SoundObstacle { x: number; y: number; width: number; height: number; blocksSound: boolean; soundDamping: number; }
+
+/** Returns multiplicative gain loss for sound-blocking rectangles crossed by a listener-to-source ray. */
+export function calculateObstacleGain(listener: Position3D, source: Position3D, obstacles: SoundObstacle[]): number {
+  let gain = 1;
+  for (const obstacle of obstacles) {
+    if (!obstacle.blocksSound) continue;
+    const left = obstacle.x, right = obstacle.x + obstacle.width, top = obstacle.y, bottom = obstacle.y + obstacle.height;
+    const dx = source.x - listener.x, dy = source.y - listener.y;
+    const intersects = (x1: number, y1: number, x2: number, y2: number) => {
+      const denominator = dx * (y2 - y1) - dy * (x2 - x1);
+      if (Math.abs(denominator) < 0.000001) return false;
+      const t = ((x1 - listener.x) * (y2 - y1) - (y1 - listener.y) * (x2 - x1)) / denominator;
+      const u = ((x1 - listener.x) * dy - (y1 - listener.y) * dx) / denominator;
+      return t >= 0 && t <= 1 && u >= 0 && u <= 1;
+    };
+    const blocked = (listener.x >= left && listener.x <= right && listener.y >= top && listener.y <= bottom) ||
+      (source.x >= left && source.x <= right && source.y >= top && source.y <= bottom) ||
+      intersects(left, top, right, top) || intersects(right, top, right, bottom) || intersects(right, bottom, left, bottom) || intersects(left, bottom, left, top);
+    if (blocked) gain *= 1 - Math.max(0, Math.min(1, obstacle.soundDamping));
+  }
+  return clampGain(gain);
+}
+
 /**
  * Calculates Euclidean distance in 3D space between two points.
  */

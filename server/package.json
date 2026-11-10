@@ -6,13 +6,18 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "dev": "ts-node src/index.ts"
+    "dev": "ts-node src/index.ts",
+    "test:auth": "npm run build && node --test test-auth-otp.mjs"
   },
   "dependencies": {
+    "@socket.io/redis-adapter": "^8.3.0",
+    "argon2": "^0.45.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "mongoose": "^9.11.2",
+    "redis": "^4.7.0",
+    "resend": "^6.34.1",
     "socket.io": "^4.8.1"
   },
   "devDependencies": {
@@ -21,5 +26,8 @@
     "@types/node": "^22.10.1",
     "ts-node": "^10.9.2",
     "typescript": "^5.7.2"
+  },
+  "allowScripts": {
+    "argon2@0.45.1": true
   }
 }

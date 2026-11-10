@@ -28,15 +28,22 @@ export interface WebRTCIceCandidatePayload {
  * Part of Member 2 & Member 4 backend signaling relay integration.
  */
 export function registerWebRTCSignaling(io: Server, socket: Socket): void {
-  const canSignal = (targetSocket: Socket) => Array.from(socket.rooms).some((room) => room !== socket.id && targetSocket.rooms.has(room));
+  const findTargetInSharedRoom = async (targetId: string) => {
+    // fetchSockets is adapter-aware, unlike io.sockets.sockets; this works across Redis-backed instances.
+    const targets = await io.in(targetId).fetchSockets();
+    const target = targets[0];
+    if (!target) return null;
+    const sharedRoom = Array.from(socket.rooms).some((room) => room !== socket.id && target.rooms.has(room));
+    return sharedRoom ? target : null;
+  };
   // 1. "webrtc:offer"
-  socket.on('webrtc:offer', (payload: WebRTCOfferPayload) => {
+  socket.on('webrtc:offer', async (payload: WebRTCOfferPayload) => {
     if (!payload?.targetId || !payload?.sdp) {
       console.warn(`[Signaling] Invalid offer payload from ${socket.id}`, payload);
       return;
     }
 
-    const targetSocket = io.sockets.sockets.get(payload.targetId);
+    const targetSocket = await findTargetInSharedRoom(payload.targetId);
     if (!targetSocket) {
       console.warn(`[Signaling] Target peer ${payload.targetId} is not connected for offer.`);
       socket.emit('webrtc:error', {
@@ -45,8 +52,6 @@ export function registerWebRTCSignaling(io: Server, socket: Socket): void {
       });
       return;
     }
-    if (!canSignal(targetSocket)) return socket.emit('webrtc:error', { message: 'That peer is not in your current room.', targetId: payload.targetId });
-
     console.log(`[Signaling] Relaying offer: ${socket.id} -> ${payload.targetId}`);
     io.to(payload.targetId).emit('webrtc:offer', {
       ...payload,
@@ -55,19 +60,17 @@ export function registerWebRTCSignaling(io: Server, socket: Socket): void {
   });
 
   // 2. "webrtc:answer"
-  socket.on('webrtc:answer', (payload: WebRTCAnswerPayload) => {
+  socket.on('webrtc:answer', async (payload: WebRTCAnswerPayload) => {
     if (!payload?.targetId || !payload?.sdp) {
       console.warn(`[Signaling] Invalid answer payload from ${socket.id}`, payload);
       return;
     }
 
-    const targetSocket = io.sockets.sockets.get(payload.targetId);
+    const targetSocket = await findTargetInSharedRoom(payload.targetId);
     if (!targetSocket) {
       console.warn(`[Signaling] Target peer ${payload.targetId} is not connected for answer.`);
       return;
     }
-    if (!canSignal(targetSocket)) return socket.emit('webrtc:error', { message: 'That peer is not in your current room.', targetId: payload.targetId });
-
     console.log(`[Signaling] Relaying answer: ${socket.id} -> ${payload.targetId}`);
     io.to(payload.targetId).emit('webrtc:answer', {
       ...payload,
@@ -76,18 +79,16 @@ export function registerWebRTCSignaling(io: Server, socket: Socket): void {
   });
 
   // 3. "webrtc:ice-candidate"
-  socket.on('webrtc:ice-candidate', (payload: WebRTCIceCandidatePayload) => {
+  socket.on('webrtc:ice-candidate', async (payload: WebRTCIceCandidatePayload) => {
     if (!payload?.targetId || !payload?.candidate) {
       console.warn(`[Signaling] Invalid ICE candidate payload from ${socket.id}`, payload);
       return;
     }
 
-    const targetSocket = io.sockets.sockets.get(payload.targetId);
+    const targetSocket = await findTargetInSharedRoom(payload.targetId);
     if (!targetSocket) {
       return; // Target already disconnected, drop candidate silently
     }
-    if (!canSignal(targetSocket)) return;
-
     console.log(`[Signaling] Relaying ICE candidate: ${socket.id} -> ${payload.targetId}`);
     io.to(payload.targetId).emit('webrtc:ice-candidate', {
       ...payload,

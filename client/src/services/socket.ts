@@ -1,4 +1,5 @@
 import { io, Socket } from 'socket.io-client';
+import { serverUrl } from './serverUrl';
 import type {
   WebRTCOfferPayload,
   WebRTCAnswerPayload,
@@ -6,12 +7,10 @@ import type {
   UserJoinPayload
 } from '../types';
 
-const SERVER_URL = import.meta.env.VITE_SOCKET_URL || import.meta.env.VITE_SERVER_URL || `${window.location.protocol}//${window.location.hostname}:3001`;
-
 /**
  * Singleton Socket.io client connection to avoid duplicate sockets.
  */
-export const socket: Socket = io(SERVER_URL, {
+export const socket: Socket = io(serverUrl, {
   autoConnect: false,
   reconnection: true,
   withCredentials: true,

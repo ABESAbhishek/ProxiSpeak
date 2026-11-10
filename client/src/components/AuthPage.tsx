@@ -1,11 +1,11 @@
 import React, { useState } from 'react';
 import { Activity, Headphones, Eye, EyeOff, Moon, Sun } from 'lucide-react';
-import { authRequest, googleLoginUrl } from '../services/authApi';
+import { authRequest } from '../services/authApi';
 import type { AccountProfile } from '../services/authApi';
 
-type Props = { theme: 'dark' | 'light'; onTheme: () => void; onAuthenticated: (profile: AccountProfile) => void; expired?: boolean; providerError?: string };
+type Props = { theme: 'dark' | 'light'; onTheme: () => void; onAuthenticated: (profile: AccountProfile) => void; expired?: boolean };
 type Mode = 'login' | 'register' | 'otp' | 'verify' | 'recovery';
-export const AuthPage: React.FC<Props> = ({ theme, onTheme, onAuthenticated, expired, providerError }) => {
+export const AuthPage: React.FC<Props> = ({ theme, onTheme, onAuthenticated, expired }) => {
   const [mode, setMode] = useState<Mode>('login'); const [fullName, setFullName] = useState(''); const [username, setUsername] = useState('');
   const [email, setEmail] = useState(''); const [identity, setIdentity] = useState(''); const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState(''); const [code, setCode] = useState(''); const [visible, setVisible] = useState(false);
@@ -42,7 +42,6 @@ export const AuthPage: React.FC<Props> = ({ theme, onTheme, onAuthenticated, exp
       <h1 id="auth-title" className="mt-3 text-3xl font-semibold tracking-tight">{title}</h1>
       <p className="mt-2 text-sm leading-6 text-[#887665]">Use your account to join the shared workspace.</p>
       {expired && <p role="status" className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">Your session expired after inactivity. Sign in to rejoin.</p>}
-      {providerError && <p role="alert" className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{providerError}</p>}
       <form className="mt-7 space-y-4" onSubmit={submit}>
         {mode === 'register' && <><label className="block text-sm font-semibold">Full name<input className="auth-input" autoComplete="name" required maxLength={32} value={fullName} onChange={e => setFullName(e.target.value)} /></label><label className="block text-sm font-semibold">Username<input className="auth-input" autoComplete="username" required minLength={3} maxLength={24} pattern="[A-Za-z0-9_]+" value={username} onChange={e => setUsername(e.target.value)} /></label><label className="block text-sm font-semibold">Email address<input className="auth-input" type="email" autoComplete="email" required value={email} onChange={e => setEmail(e.target.value)} /></label></>}
         {mode === 'login' && <label className="block text-sm font-semibold">Username or email<input className="auth-input" autoComplete="username" required value={identity} onChange={e => setIdentity(e.target.value)} /></label>}
@@ -54,7 +53,7 @@ export const AuthPage: React.FC<Props> = ({ theme, onTheme, onAuthenticated, exp
         {error && <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{error}</p>}{notice && <p role="status" className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">{notice}</p>}
         <button type="submit" disabled={busy} className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#bd674b] px-4 py-3 font-semibold text-white hover:bg-[#a9573e] disabled:opacity-60">{busy && <Activity size={16} className="animate-pulse" />}{mode === 'otp' && !otpRequested ? 'Send sign-in code' : mode === 'otp' ? 'Sign in with code' : mode === 'recovery' && !recoveryRequested ? 'Send recovery code' : mode === 'recovery' ? 'Reset password' : mode === 'verify' ? 'Verify and join' : mode === 'register' ? 'Create account' : 'Sign in'}</button>
       </form>
-      {(mode === 'login' || mode === 'register') && <><div className="my-5 flex items-center gap-3 text-xs text-[#887665]"><span className="h-px flex-1 bg-[#ddcdbb]" />or<span className="h-px flex-1 bg-[#ddcdbb]" /></div><button type="button" onClick={() => { window.location.href = googleLoginUrl; }} className="auth-secondary">Continue with Google</button><button type="button" onClick={() => switchMode('otp')} className="auth-secondary mt-2">Continue with email code</button></>}
+      {(mode === 'login' || mode === 'register') && <><div className="my-5 flex items-center gap-3 text-xs text-[#887665]"><span className="h-px flex-1 bg-[#ddcdbb]" />or<span className="h-px flex-1 bg-[#ddcdbb]" /></div><button type="button" onClick={() => switchMode('otp')} className="auth-secondary">Continue with email code</button></>}
       {mode === 'verify' && <button type="button" className="mt-3 w-full text-sm font-semibold text-[#a7533b]" onClick={async () => { setError(''); setNotice(''); try { const result = await authRequest<{ message: string }>('/email/verify/request', 'POST', { email }); setNotice(result.message); } catch (e) { setError(e instanceof Error ? e.message : 'Could not resend the code.'); } }}>Resend verification code</button>}
       <div className="mt-5 text-center text-sm text-[#887665]">{mode === 'login' ? <>New here? <button className="font-semibold text-[#a7533b]" onClick={() => switchMode('register')}>Create an account</button><br/><button className="mt-3 text-xs underline" onClick={() => { setEmail(identity.includes('@') ? identity : ''); switchMode('recovery'); }}>Forgot password?</button></> : <button className="font-semibold text-[#a7533b]" onClick={() => switchMode('login')}>Back to sign in</button>}</div>
     </section>

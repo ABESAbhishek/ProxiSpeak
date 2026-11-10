@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Activity, Clock3, MapPin, Mic, MicOff, RefreshCw, Users, Wifi } from 'lucide-react';
+import { serverUrl } from '../services/serverUrl';
 
 type TeamMember = {
   id: string;
@@ -20,9 +21,6 @@ type TeamResponse = {
   previous: TeamMember[];
   persistence: 'mongo' | 'memory';
 };
-
-const SERVER_URL = import.meta.env.VITE_SOCKET_URL || import.meta.env.VITE_SERVER_URL ||
-  `${window.location.protocol}//${window.location.hostname}:3001`;
 
 function formatTime(value: string) {
   const date = new Date(value);
@@ -90,7 +88,7 @@ export function TeamMembersPage({ isConnected, localUserId, displayName, onSaveD
     let disposed = false;
     const load = async () => {
       try {
-        const response = await fetch(`${SERVER_URL}/api/team`, { signal: controller.signal, credentials: 'include' });
+        const response = await fetch(`${serverUrl}/api/team`, { signal: controller.signal, credentials: 'include' });
         if (!response.ok) throw new Error(`Team activity request failed (${response.status}).`);
         const data = await response.json() as TeamResponse;
         if (disposed) return;

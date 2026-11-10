@@ -3,6 +3,7 @@ import { Canvas, useFrame } from '@react-three/fiber';
 import { ContactShadows, Html, OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import type { Position3D, RemotePeerAudio } from '../types';
+import type { OfficeLayout } from '../services/workspaceLayout';
 
 type OfficeScene3DProps = {
   position: Position3D;
@@ -15,6 +16,7 @@ type OfficeScene3DProps = {
   theme: 'dark' | 'light';
   selectedParticipantId: string | null;
   onSelectParticipant: (participantId: string | null) => void;
+  layout?: OfficeLayout | null;
 };
 
 const SCALE = 0.018;
@@ -326,7 +328,7 @@ const MovingLocalAvatar: React.FC<{
   );
 };
 
-const OfficeContents: React.FC<OfficeScene3DProps & { onReady: () => void }> = ({ position, displayName, avatarUrl, onMove, onHeadingChange, peers, isLocationTracking, theme, selectedParticipantId, onSelectParticipant, onReady }) => {
+const OfficeContents: React.FC<OfficeScene3DProps & { onReady: () => void }> = ({ position, displayName, avatarUrl, onMove, onHeadingChange, peers, isLocationTracking, theme, selectedParticipantId, onSelectParticipant, layout, onReady }) => {
   const localWorld = useMemo(() => toWorld(position), [position]);
   const audiblePeers = peers.filter((peer) => peer.position);
   const selectedParticipant = audiblePeers.find((peer) => peer.peerId === selectedParticipantId);
@@ -373,17 +375,25 @@ const OfficeContents: React.FC<OfficeScene3DProps & { onReady: () => void }> = (
       <WindowPanel position={[1.75, 2.03, -5.43]} />
       <WindowPanel position={[5.2, 2.03, -5.43]} />
 
-      <Desk position={[-6.2, 0, -3.45]} label="Design" rotation={Math.PI} />
-      <Desk position={[6.2, 0, -3.45]} label="Engineering" rotation={Math.PI} />
-      <Desk position={[-6.2, 0, 3.35]} label="Studio" />
-      <Desk position={[6.2, 0, 3.35]} label="Focus" />
-      <MeetingTable />
-      <Sofa position={[-2.85, 0, -0.62]} rotation={Math.PI / 2} />
-      <Sofa position={[2.85, 0, -0.62]} rotation={-Math.PI / 2} />
-      <Plant position={[-8.25, 0, -4.25]} />
-      <Plant position={[8.25, 0, -4.25]} />
-      <Plant position={[-8.25, 0, 4.25]} />
-      <Plant position={[8.25, 0, 4.25]} />
+      {layout ? layout.furniture.map((item) => {
+        const point = toWorld({ x: item.x, y: item.y, z: 0 });
+        const position: [number, number, number] = [point.x, 0, point.z];
+        if (item.type === 'desk') return <Desk key={item.id} position={position} label={item.label || 'Desk'} rotation={item.rotation} />;
+        if (item.type === 'sofa') return <Sofa key={item.id} position={position} rotation={item.rotation} />;
+        if (item.type === 'plant') return <Plant key={item.id} position={position} />;
+        return <group key={item.id} position={position} rotation={[0, item.rotation, 0]}><MeetingTable /></group>;
+      }) : <>
+        <Desk position={[-6.2, 0, -3.45]} label="Design" rotation={Math.PI} />
+        <Desk position={[6.2, 0, -3.45]} label="Engineering" rotation={Math.PI} />
+        <Desk position={[-6.2, 0, 3.35]} label="Studio" />
+        <Desk position={[6.2, 0, 3.35]} label="Focus" />
+        <MeetingTable /><Sofa position={[-2.85, 0, -0.62]} rotation={Math.PI / 2} /><Sofa position={[2.85, 0, -0.62]} rotation={-Math.PI / 2} />
+        <Plant position={[-8.25, 0, -4.25]} /><Plant position={[8.25, 0, -4.25]} /><Plant position={[-8.25, 0, 4.25]} /><Plant position={[8.25, 0, 4.25]} />
+      </>}
+      {layout?.obstacles.map((obstacle) => {
+        const point = toWorld({ x: obstacle.x + obstacle.width / 2, y: obstacle.y + obstacle.height / 2, z: 0 });
+        return <mesh key={obstacle.id} position={[point.x, 0.72, point.z]}><boxGeometry args={[obstacle.width * SCALE, 1.44, obstacle.height * SCALE]} /><meshStandardMaterial color={obstacle.blocksSound ? '#785e50' : '#9ca3af'} transparent opacity={0.76} /></mesh>;
+      })}
 
       <mesh position={[0, 0.012, 0]} rotation={[-Math.PI / 2, 0, 0]}>
         <ringGeometry args={[0.6, NEARBY_DISTANCE * SCALE, 64]} />
