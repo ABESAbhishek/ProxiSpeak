@@ -125,6 +125,7 @@ export interface RemotePeerAudio {
   isMuted: boolean;
   isSpeaking?: boolean;
   position?: Position3D;
+  roomId?: string;
   stats?: PeerAudioStats;
   /** Whether stream decoding is culled to optimize WebRTC mesh performance */
   isCulled?: boolean;

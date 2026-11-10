@@ -18,7 +18,7 @@ import type { AccountProfile } from './services/authApi';
 import { evaluateOccludedSpatialAudio, detectAcousticZone, areZonesOccluded } from './services/spatialAudio';
 import { ProximitySimulator } from './components/ProximitySimulator';
 import { deriveActiveDiscussions } from './services/workspacePresence';
-import type { ActiveDiscussion, WorkspaceMember } from './services/workspacePresence';
+import type { WorkspaceMember } from './services/workspacePresence';
 import { socketService } from './services/socket';
 import type { Position3D } from './types';
 
@@ -38,7 +38,6 @@ export const App: React.FC = () => {
   const [account, setAccount] = useState<AccountProfile | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [sessionExpired, setSessionExpired] = useState(false);
-  const [providerError, setProviderError] = useState('');
   const [idleWarning, setIdleWarning] = useState(false);
   const [idleSeconds, setIdleSeconds] = useState(120);
   const [sessionTimeoutMs, setSessionTimeoutMs] = useState(30 * 60_000);
@@ -120,8 +119,6 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     let alive = true;
-    const authError = new URLSearchParams(window.location.search).get('authError');
-    if (authError) { setProviderError('Google sign-in was cancelled or could not be verified. Try another sign-in method.'); window.history.replaceState({}, '', window.location.pathname); }
     authRequest<{ user: AccountProfile; session: { idleMs: number; idleTimeoutMs?: number; warningMs?: number } }>('/me').then(({ user, session }) => {
       if (!alive) return; setAccount(user); setDisplayName(user.fullName); setLastActivityAt(Date.now() - session.idleMs); if (session.idleTimeoutMs) setSessionTimeoutMs(session.idleTimeoutMs); if (session.warningMs) setSessionWarningMs(session.warningMs);
     }).catch((error: unknown) => { if (alive) { setAccount(null); setDisplayName(''); setSessionExpired(error instanceof Error && error.message.toLowerCase().includes('expired')); } }).finally(() => { if (alive) setAuthLoading(false); });
@@ -220,9 +217,21 @@ export const App: React.FC = () => {
   }, [account?.avatarUrl, account?.id, displayName, isConnected, isMuted, isSpeaking, localPosition, localSocketId, micIsActive, peerList]);
   const participantCount = liveMembers.length;
 
-  const activeDiscussions = useMemo<ActiveDiscussion[]>(
-    () => deriveActiveDiscussions(peerList, displayName, isSpeaking && micIsActive && !isMuted),
-    [displayName, micIsActive, isMuted, isSpeaking, peerList],
+  const activeDiscussions = useMemo(
+    () => deriveActiveDiscussions(
+      peerList,
+      displayName,
+      isSpeaking && micIsActive && !isMuted,
+      currentRoomId
+    ),
+    [
+      peerList,
+      displayName,
+      isSpeaking,
+      micIsActive,
+      isMuted,
+      currentRoomId
+    ]
   );
   const visibleSelectedMemberId = liveMembers.some((member) => member.id === selectedMemberId) ? selectedMemberId : null;
   const visibleSelectedDiscussionId = activeDiscussions.some((discussion) => discussion.id === selectedDiscussionId) ? selectedDiscussionId : null;
@@ -344,7 +353,7 @@ export const App: React.FC = () => {
             : 'Microphone on';
 
   if (authLoading) return <main className="app-shell flex min-h-screen items-center justify-center text-sm text-[#887665]" data-theme={theme}><Activity className="mr-2 animate-pulse" size={17} />Checking your ProxiSpeak session…</main>;
-  if (!account) return <AuthPage theme={theme} onTheme={() => setTheme(current => current === 'dark' ? 'light' : 'dark')} onAuthenticated={finishAuthentication} expired={sessionExpired} providerError={providerError} />;
+  if (!account) return <AuthPage theme={theme} onTheme={() => setTheme(current => current === 'dark' ? 'light' : 'dark')} onAuthenticated={finishAuthentication} expired={sessionExpired} />;
   if (!isRegistered) return <main className="app-shell flex min-h-screen items-center justify-center px-5 py-10 text-[#352820]" data-theme={theme}><section className="welcome-card w-full max-w-md rounded-3xl border bg-white p-8 text-center shadow-xl">{joinError ? <><h1 className="text-xl font-semibold">Could not join the office</h1><p role="alert" className="my-4 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{joinError}</p><button className="w-full rounded-xl bg-[#bd674b] px-4 py-3 font-semibold text-white" onClick={retryJoin}>Retry connection</button><button className="mt-3 text-sm underline" onClick={() => { void signOut(); }}>Sign out</button></> : <><Activity className="mx-auto mb-3 animate-pulse text-[#bd674b]" size={24} /><h1 className="text-xl font-semibold">Joining ProxiSpeak…</h1><p className="mt-2 text-sm text-[#887665]">Connecting your account to the virtual office.</p></>}</section></main>;
 
   return (
@@ -376,9 +385,8 @@ export const App: React.FC = () => {
 
             <div className="flex items-center gap-2 rounded-xl border border-white/[0.07] bg-white/[0.025] px-2.5 py-2 sm:px-3">
               <span
-                className={`h-2 w-2 rounded-full ${
-                  isConnected ? 'bg-emerald-600' : 'bg-rose-500'
-                }`}
+                className={`h-2 w-2 rounded-full ${isConnected ? 'bg-emerald-600' : 'bg-rose-500'
+                  }`}
               />
               <span className="text-xs text-slate-300">
                 {connectionLabel}
@@ -495,74 +503,74 @@ export const App: React.FC = () => {
           {/* Main workspace */}
           <main className="app-main min-w-0 px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
             {activePage === 'team' ? <TeamMembersPage isConnected={isConnected} localUserId={account.id} displayName={displayName} onSaveDisplayName={saveDisplayName} /> : activePage === 'account' ? <AccountPage profile={account} onProfile={saveAccountProfile} onLogout={() => { void signOut(); }} /> : <>
-            {/* Page heading */}
-            <section className="mb-7 flex flex-col justify-between gap-5 xl:flex-row xl:items-end">
-              <div>
-                <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-indigo-300">
-                  <AudioLines size={15} />
-                  Your shared workspace
+              {/* Page heading */}
+              <section className="mb-7 flex flex-col justify-between gap-5 xl:flex-row xl:items-end">
+                <div>
+                  <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-indigo-300">
+                    <AudioLines size={15} />
+                    Your shared workspace
+                  </div>
+
+                  <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">
+                    Work better,{' '}
+                    <span className="bg-gradient-to-r from-[#c96e51] to-[#a94e37] bg-clip-text text-transparent">
+                      together.
+                    </span>
+                  </h2>
+
+                  <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-400">
+                    Move around your virtual office. Your position is the
+                    foundation for natural, proximity-based conversations.
+                  </p>
+                  {!isDesktopLayout && (
+                    <button type="button" className="workspace-panel-toggle mt-4" onClick={toggleWorkspacePanel} aria-expanded={isWorkspacePanelOpen}>
+                      <Users size={16} /> {isWorkspacePanelOpen ? 'Close team panel' : `Team workspace · ${liveMembers.length} online`}
+                    </button>
+                  )}
                 </div>
 
-                <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">
-                  Work better,{' '}
-                  <span className="bg-gradient-to-r from-[#c96e51] to-[#a94e37] bg-clip-text text-transparent">
-                    together.
-                  </span>
-                </h2>
-
-                <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-400">
-                  Move around your virtual office. Your position is the
-                  foundation for natural, proximity-based conversations.
-                </p>
-                {!isDesktopLayout && (
-                  <button type="button" className="workspace-panel-toggle mt-4" onClick={toggleWorkspacePanel} aria-expanded={isWorkspacePanelOpen}>
-                    <Users size={16} /> {isWorkspacePanelOpen ? 'Close team panel' : `Team workspace · ${liveMembers.length} online`}
-                  </button>
-                )}
-              </div>
-
-              <div className="flex flex-wrap gap-3">
-                <div className="flex items-center gap-3 rounded-xl border border-white/[0.07] bg-white/[0.025] px-4 py-3">
+                <div className="flex flex-wrap gap-3">
+                  <div className="flex items-center gap-3 rounded-xl border border-white/[0.07] bg-white/[0.025] px-4 py-3">
                     <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-orange-100 text-[#a7533b]">
-                    <Users size={18} />
-                  </div>
-                  <div>
-                    <p className="text-lg font-semibold">{peerList.length}</p>
-                    <p className="text-[11px] text-slate-500">Connected peers</p>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-3 rounded-xl border border-white/[0.07] bg-white/[0.025] px-4 py-3">
-                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-100 text-emerald-800">
-                    <Wifi size={18} />
-                  </div>
-                  <div>
-                    <p className="text-sm font-semibold">
-                      {isConnected ? 'Online' : 'Offline'}
-                    </p>
-                    <p className="text-[11px] text-slate-500">Server connection</p>
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            {/* Office and voice panel */}
-            <section className="workspace-grid grid grid-cols-1 items-start gap-5 xl:grid-cols-[minmax(0,1fr)_340px] 2xl:gap-6">
-              {/* Office */}
-              <div className="glass-card office-card min-w-0 overflow-hidden rounded-2xl border border-white/[0.08] bg-[#0c111e] shadow-2xl shadow-black/10">
-                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.06] px-5 py-4 sm:px-6">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-orange-100 text-[#a7533b]">
-                      <MapPin size={19} />
+                      <Users size={18} />
                     </div>
-
                     <div>
-                      <h3 className="text-sm font-semibold">Virtual office</h3>
-                      <p className="mt-1 text-xs text-slate-500">
-                        Walk with WASD / arrows · drag to orbit
-                      </p>
+                      <p className="text-lg font-semibold">{peerList.length}</p>
+                      <p className="text-[11px] text-slate-500">Connected peers</p>
                     </div>
                   </div>
+
+                  <div className="flex items-center gap-3 rounded-xl border border-white/[0.07] bg-white/[0.025] px-4 py-3">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-100 text-emerald-800">
+                      <Wifi size={18} />
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold">
+                        {isConnected ? 'Online' : 'Offline'}
+                      </p>
+                      <p className="text-[11px] text-slate-500">Server connection</p>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              {/* Office and voice panel */}
+              <section className="workspace-grid grid grid-cols-1 items-start gap-5 xl:grid-cols-[minmax(0,1fr)_340px] 2xl:gap-6">
+                {/* Office */}
+                <div className="glass-card office-card min-w-0 overflow-hidden rounded-2xl border border-white/[0.08] bg-[#0c111e] shadow-2xl shadow-black/10">
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.06] px-5 py-4 sm:px-6">
+                    <div className="flex items-center gap-3">
+                      <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-orange-100 text-[#a7533b]">
+                        <MapPin size={19} />
+                      </div>
+
+                      <div>
+                        <h3 className="text-sm font-semibold">Virtual office</h3>
+                        <p className="mt-1 text-xs text-slate-500">
+                          Walk with WASD / arrows · drag to orbit
+                        </p>
+                      </div>
+                    </div>
 
                   <div className="flex flex-wrap items-center gap-2">
                     <div
@@ -581,9 +589,9 @@ export const App: React.FC = () => {
                       </span>
                     </div>
                   </div>
-                </div>
+                  </div>
 
-                <div className="p-2 sm:p-3">
+                  <div className="p-2 sm:p-3">
                     <Suspense fallback={<div className="office-scene-viewport scene-fallback" role="status"><strong>Loading interactive office…</strong><span>Preparing the studio for your team.</span></div>}>
                       <OfficeScene3D
                         position={localPosition}
@@ -598,310 +606,308 @@ export const App: React.FC = () => {
                         onSelectParticipant={setSelectedMemberId}
                       />
                     </Suspense>
-                </div>
-
-                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/[0.06] px-5 py-3">
-                  <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-slate-400">
-                    <span className="flex items-center gap-2">
-                      <span className="h-2 w-2 rounded-full bg-[#bd674b]" />
-                      You
-                    </span>
-                    <span className="flex items-center gap-2">
-                      <span className="h-2 w-2 rounded-full bg-[#78936e]" />
-                      Connected teammates
-                    </span>
                   </div>
 
-                  <div className="flex flex-wrap items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={toggleLocationSharing}
-                      aria-pressed={location.enabled}
-                      className={`flex items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-semibold transition ${location.enabled ? 'border border-[#a7533b]/25 bg-[#a7533b]/10 text-[#8d402d] hover:bg-[#a7533b]/15' : 'bg-[#a7533b] text-white shadow-md shadow-orange-950/15 hover:bg-[#98452f]'}`}
-                    >
-                      <LocateFixed size={15} />
-                      {location.enabled ? 'Stop sharing' : 'Share my location'}
-                    </button>
-                    <span role="status" aria-live="polite" className={`text-[11px] ${location.error ? 'text-rose-700' : 'text-slate-500'}`}>
-                      {location.error ?? (location.coordinates ? `Following device · ±${Math.round(location.coordinates.accuracy)} m` : location.enabled ? 'Waiting for location permission…' : 'Location sharing is off')}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Audio and people */}
-              <aside className="space-y-5">
-                {/* Microphone card */}
-                <section className="glass-card rounded-2xl border border-white/[0.08] bg-[#0c111e] p-5">
-                  <div className="mb-5 flex items-start justify-between">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <Volume2 size={16} className="text-indigo-300" />
-                        <h3 className="text-sm font-semibold">Your audio</h3>
-                      </div>
-                      <p className="mt-1 text-xs text-slate-500">
-                        Microphone and voice activity
-                      </p>
-                    </div>
-
-                    <span className={`rounded-lg px-2 py-1 text-[10px] font-semibold ${micIsActive && !isMuted ? 'bg-emerald-500/10 text-emerald-300' : micIsActive && isMuted ? 'bg-amber-500/10 text-amber-300' : micStatus === 'error' || micStatus === 'denied' ? 'bg-rose-500/10 text-rose-300' : 'bg-white/[0.05] text-slate-400'}`}>
-                      {micLabel}
-                    </span>
-                  </div>
-
-                  <div className="mb-4 rounded-xl border border-white/[0.05] bg-black/20 p-3">
-                    <div className="mb-3 flex items-center justify-between">
-                      <span className="text-xs text-slate-400">Input level</span>
-                      <span className="font-mono text-xs text-slate-400">
-                        {Math.round(Math.min(100, Math.max(0, audioLevel)))}%
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/[0.06] px-5 py-3">
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-slate-400">
+                      <span className="flex items-center gap-2">
+                        <span className="h-2 w-2 rounded-full bg-[#bd674b]" />
+                        You
+                      </span>
+                      <span className="flex items-center gap-2">
+                        <span className="h-2 w-2 rounded-full bg-[#78936e]" />
+                        Connected teammates
                       </span>
                     </div>
 
-                    <div className="h-2 overflow-hidden rounded-full bg-slate-800">
-                      <div
-                        className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-emerald-400 transition-all duration-100"
-                        style={{
-                          width: `${Math.min(100, Math.max(0, audioLevel))}%`,
-                        }}
+                    <div className="flex flex-wrap items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={toggleLocationSharing}
+                        aria-pressed={location.enabled}
+                        className={`flex items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-semibold transition ${location.enabled ? 'border border-[#a7533b]/25 bg-[#a7533b]/10 text-[#8d402d] hover:bg-[#a7533b]/15' : 'bg-[#a7533b] text-white shadow-md shadow-orange-950/15 hover:bg-[#98452f]'}`}
+                      >
+                        <LocateFixed size={15} />
+                        {location.enabled ? 'Stop sharing' : 'Share my location'}
+                      </button>
+                      <span role="status" aria-live="polite" className={`text-[11px] ${location.error ? 'text-rose-700' : 'text-slate-500'}`}>
+                        {location.error ?? (location.coordinates ? `Following device · ±${Math.round(location.coordinates.accuracy)} m` : location.enabled ? 'Waiting for location permission…' : 'Location sharing is off')}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Audio and people */}
+                <aside className="space-y-5">
+                  {/* Microphone card */}
+                  <section className="glass-card rounded-2xl border border-white/[0.08] bg-[#0c111e] p-5">
+                    <div className="mb-5 flex items-start justify-between">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <Volume2 size={16} className="text-indigo-300" />
+                          <h3 className="text-sm font-semibold">Your audio</h3>
+                        </div>
+                        <p className="mt-1 text-xs text-slate-500">
+                          Microphone and voice activity
+                        </p>
+                      </div>
+
+                      <span className={`rounded-lg px-2 py-1 text-[10px] font-semibold ${micIsActive && !isMuted ? 'bg-emerald-500/10 text-emerald-300' : micIsActive && isMuted ? 'bg-amber-500/10 text-amber-300' : micStatus === 'error' || micStatus === 'denied' ? 'bg-rose-500/10 text-rose-300' : 'bg-white/[0.05] text-slate-400'}`}>
+                        {micLabel}
+                      </span>
+                    </div>
+
+                    <div className="mb-4 rounded-xl border border-white/[0.05] bg-black/20 p-3">
+                      <div className="mb-3 flex items-center justify-between">
+                        <span className="text-xs text-slate-400">Input level</span>
+                        <span className="font-mono text-xs text-slate-400">
+                          {Math.round(Math.min(100, Math.max(0, audioLevel)))}%
+                        </span>
+                      </div>
+
+                      <div className="h-2 overflow-hidden rounded-full bg-slate-800">
+                        <div
+                          className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-emerald-400 transition-all duration-100"
+                          style={{
+                            width: `${Math.min(100, Math.max(0, audioLevel))}%`,
+                          }}
+                        />
+                      </div>
+
+                      <p className="mt-3 text-[11px] text-slate-500">
+                        {!micIsActive
+                          ? 'Start your mic to check input'
+                          : isMuted
+                            ? 'Input paused while muted'
+                            : isSpeaking
+                              ? 'Voice activity detected'
+                              : 'Waiting for voice activity'}
+                      </p>
+                    </div>
+
+                    {micError && (
+                      <p role="alert" className="mb-4 rounded-lg border border-rose-400/20 bg-rose-500/[0.07] px-3 py-2 text-xs leading-5 text-rose-200">
+                        {micError}
+                      </p>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (micIsActive) toggleMute();
+                        else void startMicrophone();
+                      }}
+                      disabled={micStatus === 'requesting'}
+                      className={`flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${isMuted
+                          ? 'border border-rose-400/20 bg-rose-500/10 text-rose-300 hover:bg-rose-500/15'
+                          : 'bg-indigo-500 text-white shadow-lg shadow-indigo-500/10 hover:bg-indigo-400'
+                        }`}
+                    >
+                      {micIsActive && !isMuted ? <MicOff size={17} /> : <Mic size={17} />}
+                      {micStatus === 'requesting'
+                        ? 'Requesting microphone…'
+                        : !micIsActive
+                          ? 'Start microphone'
+                          : isMuted
+                            ? 'Unmute microphone'
+                            : 'Mute microphone'}
+                    </button>
+
+                    <p className="mt-3 text-center text-[11px] text-slate-600">
+                      {micIsActive ? 'Use Audio settings to stop the microphone or change devices.' : 'Your microphone stays off until you start it.'}
+                    </p>
+                  </section>
+
+                  {/* Participants */}
+                  <section className="glass-card rounded-2xl border border-white/[0.08] bg-[#0c111e] p-5">
+                    <div className="mb-4 flex items-center justify-between">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <Users size={16} className="text-indigo-300" />
+                          <h3 className="text-sm font-semibold">In this room</h3>
+                        </div>
+                        <p className="mt-1 text-xs text-slate-500">
+                          Real people connected to this room
+                        </p>
+                      </div>
+
+                      <span className="rounded-lg border border-white/[0.07] bg-white/[0.03] px-2.5 py-1 text-xs text-slate-300">
+                        {participantCount}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-3 rounded-xl border border-white/[0.05] bg-white/[0.02] p-3">
+                      <div className="flex h-9 w-9 items-center justify-center rounded-full bg-indigo-500/15 text-sm font-bold text-indigo-200">
+                        {displayName.slice(0, 1).toUpperCase()}
+                      </div>
+
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium">{displayName} <span className="text-[10px] text-slate-500">(you)</span></p>
+                        <p className="mt-1 text-[11px] text-slate-500">
+                          {micIsActive
+                            ? isMuted
+                              ? 'Microphone muted'
+                              : isSpeaking
+                                ? 'Speaking'
+                                : 'Microphone ready'
+                            : 'Microphone idle'}
+                        </p>
+                      </div>
+
+                      <span
+                        className={`h-2 w-2 rounded-full ${isConnected ? 'bg-emerald-400' : 'bg-rose-400'
+                          }`}
                       />
                     </div>
 
-                    <p className="mt-3 text-[11px] text-slate-500">
-                      {!micIsActive
-                        ? 'Start your mic to check input'
-                        : isMuted
-                          ? 'Input paused while muted'
-                          : isSpeaking
-                            ? 'Voice activity detected'
-                            : 'Waiting for voice activity'}
-                    </p>
-                  </div>
+                    {peerList.length > 0 ? (
+                      <div className="mt-2 space-y-2">
+                        {peerList.map((peer) => (
+                          <div
+                            key={peer.peerId}
+                            className="flex items-center gap-3 rounded-xl border border-white/[0.05] bg-white/[0.02] p-3"
+                          >
+                            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-emerald-500/10 text-sm font-bold text-emerald-300">
+                              {peer.username.slice(0, 1).toUpperCase()}
+                            </div>
 
-                  {micError && (
-                    <p role="alert" className="mb-4 rounded-lg border border-rose-400/20 bg-rose-500/[0.07] px-3 py-2 text-xs leading-5 text-rose-200">
-                      {micError}
-                    </p>
-                  )}
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-sm font-medium">
+                                {peer.username}
+                              </p>
+                              <p className="mt-1 text-[11px] text-slate-500">
+                                {peer.connectionState}
+                              </p>
+                            </div>
 
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (micIsActive) toggleMute();
-                      else void startMicrophone();
-                    }}
-                    disabled={micStatus === 'requesting'}
-                    className={`flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${
-                      isMuted
-                        ? 'border border-rose-400/20 bg-rose-500/10 text-rose-300 hover:bg-rose-500/15'
-                        : 'bg-indigo-500 text-white shadow-lg shadow-indigo-500/10 hover:bg-indigo-400'
-                    }`}
-                  >
-                    {micIsActive && !isMuted ? <MicOff size={17} /> : <Mic size={17} />}
-                    {micStatus === 'requesting'
-                      ? 'Requesting microphone…'
-                      : !micIsActive
-                        ? 'Start microphone'
-                        : isMuted
-                          ? 'Unmute microphone'
-                          : 'Mute microphone'}
-                  </button>
-
-                  <p className="mt-3 text-center text-[11px] text-slate-600">
-                    {micIsActive ? 'Use Audio settings to stop the microphone or change devices.' : 'Your microphone stays off until you start it.'}
-                  </p>
-                </section>
-
-                {/* Participants */}
-                <section className="glass-card rounded-2xl border border-white/[0.08] bg-[#0c111e] p-5">
-                  <div className="mb-4 flex items-center justify-between">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <Users size={16} className="text-indigo-300" />
-                        <h3 className="text-sm font-semibold">In this room</h3>
+                            <span className="h-2 w-2 rounded-full bg-emerald-400" />
+                          </div>
+                        ))}
                       </div>
+                    ) : (
+                      <div className="mt-3 rounded-xl border border-dashed border-white/[0.08] px-4 py-6 text-center">
+                        <Radio size={20} className="mx-auto mb-2 text-slate-600" />
+                        <p className="text-xs font-medium text-slate-400">
+                          Just you for now
+                        </p>
+                        <p className="mt-1 text-[11px] leading-5 text-slate-600">
+                          Connect another browser session to see real participants here.
+                        </p>
+                      </div>
+                    )}
+                  </section>
+                </aside>
+              </section>
+
+              {/* Advanced settings */}
+              <section className="glass-card mt-5 overflow-hidden rounded-2xl border border-white/[0.08] bg-[#0c111e]">
+                <button
+                  type="button"
+                  onClick={() => setShowDiagnostics(!showDiagnostics)}
+                  aria-expanded={showDiagnostics}
+                  className="flex w-full items-center justify-between gap-4 px-5 py-5 text-left transition hover:bg-white/[0.02] sm:px-6"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-white/[0.04] text-slate-300">
+                      <Settings2 size={18} />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-semibold">
+                        Audio settings & diagnostics
+                      </h3>
                       <p className="mt-1 text-xs text-slate-500">
-                        Real people connected to this room
+                        Devices, peer management and signaling logs
                       </p>
                     </div>
-
-                    <span className="rounded-lg border border-white/[0.07] bg-white/[0.03] px-2.5 py-1 text-xs text-slate-300">
-                      {participantCount}
-                    </span>
                   </div>
 
-                  <div className="flex items-center gap-3 rounded-xl border border-white/[0.05] bg-white/[0.02] p-3">
-                    <div className="flex h-9 w-9 items-center justify-center rounded-full bg-indigo-500/15 text-sm font-bold text-indigo-200">
-                      {displayName.slice(0, 1).toUpperCase()}
-                    </div>
-
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium">{displayName} <span className="text-[10px] text-slate-500">(you)</span></p>
-                      <p className="mt-1 text-[11px] text-slate-500">
-                        {micIsActive
-                          ? isMuted
-                            ? 'Microphone muted'
-                            : isSpeaking
-                              ? 'Speaking'
-                              : 'Microphone ready'
-                          : 'Microphone idle'}
-                      </p>
-                    </div>
-
-                    <span
-                      className={`h-2 w-2 rounded-full ${
-                        isConnected ? 'bg-emerald-400' : 'bg-rose-400'
-                      }`}
-                    />
-                  </div>
-
-                  {peerList.length > 0 ? (
-                    <div className="mt-2 space-y-2">
-                      {peerList.map((peer) => (
-                        <div
-                          key={peer.peerId}
-                          className="flex items-center gap-3 rounded-xl border border-white/[0.05] bg-white/[0.02] p-3"
-                        >
-                          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-emerald-500/10 text-sm font-bold text-emerald-300">
-                            {peer.username.slice(0, 1).toUpperCase()}
-                          </div>
-
-                          <div className="min-w-0 flex-1">
-                            <p className="truncate text-sm font-medium">
-                              {peer.username}
-                            </p>
-                            <p className="mt-1 text-[11px] text-slate-500">
-                              {peer.connectionState}
-                            </p>
-                          </div>
-
-                          <span className="h-2 w-2 rounded-full bg-emerald-400" />
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="mt-3 rounded-xl border border-dashed border-white/[0.08] px-4 py-6 text-center">
-                      <Radio size={20} className="mx-auto mb-2 text-slate-600" />
-                      <p className="text-xs font-medium text-slate-400">
-                        Just you for now
-                      </p>
-                      <p className="mt-1 text-[11px] leading-5 text-slate-600">
-                        Connect another browser session to see real participants here.
-                      </p>
-                    </div>
-                  )}
-                </section>
-              </aside>
-            </section>
-
-            {/* Advanced settings */}
-            <section className="glass-card mt-5 overflow-hidden rounded-2xl border border-white/[0.08] bg-[#0c111e]">
-              <button
-                type="button"
-                onClick={() => setShowDiagnostics(!showDiagnostics)}
-                aria-expanded={showDiagnostics}
-                className="flex w-full items-center justify-between gap-4 px-5 py-5 text-left transition hover:bg-white/[0.02] sm:px-6"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-white/[0.04] text-slate-300">
-                    <Settings2 size={18} />
-                  </div>
-                  <div>
-                    <h3 className="text-sm font-semibold">
-                      Audio settings & diagnostics
-                    </h3>
-                    <p className="mt-1 text-xs text-slate-500">
-                      Devices, peer management and signaling logs
-                    </p>
-                  </div>
-                </div>
-
-                <ChevronDown
-                  size={18}
-                  className={`shrink-0 text-slate-500 transition-transform ${
-                    showDiagnostics ? 'rotate-180' : ''
-                  }`}
-                />
-              </button>
-
-              {showDiagnostics && (
-                <div className="space-y-6 border-t border-white/[0.06] p-4 sm:p-6">
-                  <AudioControls
-                    status={micStatus}
-                    isMuted={isMuted}
-                    isSpeaking={isSpeaking}
-                    audioLevel={audioLevel}
-                    frequencyBands={frequencyBands}
-                    permissionState={permissionState}
-                    availableDevices={availableDevices}
-                    selectedDeviceId={selectedDeviceId}
-                    onSelectDevice={setSelectedDeviceId}
-                    availableOutputDevices={availableOutputDevices}
-                    selectedOutputDeviceId={selectedOutputDeviceId}
-                    onSelectOutputDevice={handleSelectOutputDevice}
-                    audioConstraints={audioConstraints}
-                    onToggleAudioConstraint={toggleAudioConstraint}
-                    isSelfTesting={isSelfTesting}
-                    selfTestSecondsRemaining={selfTestSecondsRemaining}
-                    testAudioUrl={testAudioUrl}
-                    onStartSelfTest={startSelfTest}
-                    onClearSelfTest={clearSelfTest}
-                    errorMessage={micError}
-                    onStart={startMicrophone}
-                    onStop={stopMicrophone}
-                    onToggleMute={toggleMute}
-                    micGain={micGain}
-                    onSetMicGain={setMicGain}
+                  <ChevronDown
+                    size={18}
+                    className={`shrink-0 text-slate-500 transition-transform ${
+                      showDiagnostics ? 'rotate-180' : ''
+                    }`}
                   />
+                </button>
 
-                  <div className="border-t border-white/[0.06] pt-6">
-                    <PeerList
-                      peers={peerControls}
-                      localSocketId={localSocketId}
-                      currentRoomId={currentRoomId}
-                      isMicActive={micIsActive}
-                      onStartCall={startCall}
-                      onCloseCall={closeCall}
-                      onRestartIce={restartIce}
-                      onSetVolume={setManualPeerVolume}
-                      onSwitchRoom={switchRoom}
-                      localPosition={localPosition}
-                      culledPeerCount={culledPeerCount}
-                      activeStreamCount={activeStreamCount}
+                {showDiagnostics && (
+                  <div className="space-y-6 border-t border-white/[0.06] p-4 sm:p-6">
+                    <AudioControls
+                      status={micStatus}
+                      isMuted={isMuted}
+                      isSpeaking={isSpeaking}
+                      audioLevel={audioLevel}
+                      frequencyBands={frequencyBands}
+                      permissionState={permissionState}
+                      availableDevices={availableDevices}
+                      selectedDeviceId={selectedDeviceId}
+                      onSelectDevice={setSelectedDeviceId}
+                      availableOutputDevices={availableOutputDevices}
+                      selectedOutputDeviceId={selectedOutputDeviceId}
+                      onSelectOutputDevice={handleSelectOutputDevice}
+                      audioConstraints={audioConstraints}
+                      onToggleAudioConstraint={toggleAudioConstraint}
+                      isSelfTesting={isSelfTesting}
+                      selfTestSecondsRemaining={selfTestSecondsRemaining}
+                      testAudioUrl={testAudioUrl}
+                      onStartSelfTest={startSelfTest}
+                      onClearSelfTest={clearSelfTest}
+                      errorMessage={micError}
+                      onStart={startMicrophone}
+                      onStop={stopMicrophone}
+                      onToggleMute={toggleMute}
+                      micGain={micGain}
+                      onSetMicGain={setMicGain}
                     />
-                  </div>
 
-                  <div className="border-t border-white/[0.06] pt-6">
-                    <ProximitySimulator
-                      peers={peers}
-                      localIsSpeaking={isSpeaking && micIsActive && !isMuted}
-                      onSetSpatial={setPeerSpatial}
-                      onLocalMove={reportLocalPosition}
-                    />
-                  </div>
+                    <div className="border-t border-white/[0.06] pt-6">
+                      <PeerList
+                        peers={peerControls}
+                        localSocketId={localSocketId}
+                        currentRoomId={currentRoomId}
+                        isMicActive={micIsActive}
+                        onStartCall={startCall}
+                        onCloseCall={closeCall}
+                        onRestartIce={restartIce}
+                        onSetVolume={setManualPeerVolume}
+                        onSwitchRoom={switchRoom}
+                        localPosition={localPosition}
+                        culledPeerCount={culledPeerCount}
+                        activeStreamCount={activeStreamCount}
+                      />
+                    </div>
 
-                  <div className="border-t border-white/[0.06] pt-6">
-                    <SignalingLog
-                      logs={signalingLogs}
-                      signalingLatencyMs={signalingLatencyMs}
-                      onClear={clearLogs}
-                    />
+                    <div className="border-t border-white/[0.06] pt-6">
+                      <ProximitySimulator
+                        peers={peers}
+                        localIsSpeaking={isSpeaking && micIsActive && !isMuted}
+                        onSetSpatial={setPeerSpatial}
+                        onLocalMove={reportLocalPosition}
+                      />
+                    </div>
+
+                    <div className="border-t border-white/[0.06] pt-6">
+                      <SignalingLog
+                        logs={signalingLogs}
+                        signalingLatencyMs={signalingLatencyMs}
+                        onClear={clearLogs}
+                      />
+                    </div>
                   </div>
+                )}
+              </section>
+
+              {/* Footer */}
+              <footer className="flex flex-col justify-between gap-3 py-7 text-[11px] text-slate-600 sm:flex-row sm:items-center">
+                <p>
+                  ProxiSpeak <span className="px-1.5 text-slate-700">/</span>
+                  Geospatial Proximity Audio Ecosystem
+                </p>
+
+                <div className="flex items-center gap-2">
+                  <ShieldCheck size={13} />
+                  <span>Spatial voice workspace</span>
                 </div>
-              )}
-            </section>
-
-            {/* Footer */}
-            <footer className="flex flex-col justify-between gap-3 py-7 text-[11px] text-slate-600 sm:flex-row sm:items-center">
-              <p>
-                ProxiSpeak <span className="px-1.5 text-slate-700">/</span>
-                Geospatial Proximity Audio Ecosystem
-              </p>
-
-              <div className="flex items-center gap-2">
-                <ShieldCheck size={13} />
-                <span>Spatial voice workspace</span>
-              </div>
-            </footer>
+              </footer>
             </>}
           </main>
           {activePage === 'office' && (isDesktopLayout || isWorkspacePanelOpen) && (

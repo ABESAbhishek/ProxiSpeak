@@ -45,6 +45,7 @@ export class WebRTCManager {
   private retryTimeouts: Map<string, number> = new Map();
   private retryAttempts: Map<string, number> = new Map();
   private isRestartingIce: Map<string, boolean> = new Map();
+  private retryInProgress: Set<string> = new Set();
   private peerSpatialParams: Map<string, { volume: number; pan: number; cutoffHz?: number; smoothing?: number }> = new Map();
   private culledPeers: Set<string> = new Set();
 
@@ -194,7 +195,10 @@ export class WebRTCManager {
 
       if (state === 'failed') {
         console.warn(`[WebRTC] Connection failed with ${peerId}. Triggering ICE recovery.`);
-        void this.retryPeerConnection(peerId, true);
+        const attempts = this.retryAttempts.get(peerId) ?? 0;
+        if (attempts < this.MAX_ICE_RETRIES && !this.isRestartingIce.has(peerId) && !this.retryInProgress.has(peerId)) {
+          void this.retryPeerConnection(peerId, true);
+        }
         return;
       }
 
@@ -268,7 +272,7 @@ export class WebRTCManager {
       this.callbacks.onSendOffer({
         senderId: this.localSocketId,
         targetId: peerId,
-        sdp: offer
+        sdp: pc.localDescription ?? offer
       });
     } catch (err) {
       console.error(`[WebRTC] Failed to create offer for ${peerId}:`, err);
@@ -666,7 +670,8 @@ export class WebRTCManager {
     if (
       !pc ||
       pc.connectionState === 'closed' ||
-      pc.signalingState === 'closed'
+      pc.signalingState === 'closed' ||
+      this.retryInProgress.has(peerId)
     ) {
       return;
     }
@@ -688,6 +693,7 @@ export class WebRTCManager {
       return;
     }
 
+    this.retryInProgress.add(peerId);
     this.retryAttempts.set(peerId, attempts + 1);
 
     // Exponential backoff with jitter
@@ -739,6 +745,7 @@ export class WebRTCManager {
 
     this.retryAttempts.delete(peerId);
     this.isRestartingIce.delete(peerId);
+    this.retryInProgress.delete(peerId);
 
     const pc = this.peerConnections.get(peerId);
     if (pc) {

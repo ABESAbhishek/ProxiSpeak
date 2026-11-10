@@ -154,7 +154,8 @@ export function useWebRTCAudio(
               pan: existing?.pan ?? 0,
               isMuted: existing?.isMuted ?? false,
               isSpeaking: existing?.isSpeaking ?? false,
-              position: existing?.position
+              position: existing?.position,
+              roomId: existing?.roomId
             }
           };
         });
@@ -347,26 +348,28 @@ export function useWebRTCAudio(
 
           next[user.id] = existing
             ? {
-                ...existing,
-                accountId: user.accountId ?? existing.accountId,
-                username: user.username || existing.username,
-                avatarUrl: user.avatarUrl ?? existing.avatarUrl,
-                position: user.position || existing.position,
-                isMuted: user.isMuted ?? existing.isMuted,
-                isSpeaking: user.isSpeaking ?? existing.isSpeaking
-              }
+              ...existing,
+              accountId: user.accountId ?? existing.accountId,
+              username: user.username || existing.username,
+              avatarUrl: user.avatarUrl ?? existing.avatarUrl,
+              roomId: user.roomId ?? payload.roomId,
+              position: user.position || existing.position,
+              isMuted: user.isMuted ?? existing.isMuted,
+              isSpeaking: user.isSpeaking ?? existing.isSpeaking
+            }
             : {
-                peerId: user.id,
-                accountId: user.accountId,
-                username: user.username,
-                avatarUrl: user.avatarUrl,
-                stream: new MediaStream(),
-                connectionState: 'new',
-                volume: 1.0,
-                isMuted: user.isMuted || false,
-                isSpeaking: user.isSpeaking || false,
-                position: user.position
-              };
+              peerId: user.id,
+              accountId: user.accountId,
+              username: user.username,
+              avatarUrl: user.avatarUrl,
+              roomId: user.roomId ?? payload.roomId,
+              stream: new MediaStream(),
+              connectionState: 'new',
+              volume: 1.0,
+              isMuted: user.isMuted || false,
+              isSpeaking: user.isSpeaking || false,
+              position: user.position
+            };
         });
 
         return next;
@@ -389,6 +392,7 @@ export function useWebRTCAudio(
             accountId: user.accountId,
             username: user.username,
             avatarUrl: user.avatarUrl,
+            roomId: user.roomId ?? currentRoomIdRef.current,
             stream: new MediaStream(),
             connectionState: 'new',
             volume: 1.0,
@@ -572,7 +576,7 @@ export function useWebRTCAudio(
     return () => clearInterval(interval);
   }, [isConnected]);
 
-  // Automatically calculate and apply each remote user's audio gain
+  // Automatically calculate and apply each remote user's spatial audio
   // and manage WebRTC mesh spatial culling whenever positions change.
   useEffect(() => {
     const MAX_AUDIBLE_MESH_STREAMS = 6;
