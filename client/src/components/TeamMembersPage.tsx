@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Activity, Clock3, MapPin, Mic, MicOff, RefreshCw, Users, Wifi } from 'lucide-react';
+import { getBaseUrl } from '../services/authApi';
 
 type TeamMember = {
   id: string;
@@ -21,8 +22,7 @@ type TeamResponse = {
   persistence: 'mongo' | 'memory';
 };
 
-const SERVER_URL = import.meta.env.VITE_SOCKET_URL || import.meta.env.VITE_SERVER_URL ||
-  `${window.location.protocol}//${window.location.hostname}:3001`;
+const SERVER_URL = getBaseUrl() || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3001');
 
 function formatTime(value: string) {
   const date = new Date(value);

@@ -116,6 +116,7 @@ export const App: React.FC = () => {
     activeStreamCount,
     switchRoom,
     setAudioOutputDevice,
+    enterOfflineMode,
   } = useWebRTCAudio(localStream, isSpeaking, isMuted, localPosition, displayName, Boolean(displayName), localHeadingRad);
 
   useEffect(() => {
@@ -345,7 +346,7 @@ export const App: React.FC = () => {
 
   if (authLoading) return <main className="app-shell flex min-h-screen items-center justify-center text-sm text-[#887665]" data-theme={theme}><Activity className="mr-2 animate-pulse" size={17} />Checking your ProxiSpeak session…</main>;
   if (!account) return <AuthPage theme={theme} onTheme={() => setTheme(current => current === 'dark' ? 'light' : 'dark')} onAuthenticated={finishAuthentication} expired={sessionExpired} providerError={providerError} />;
-  if (!isRegistered) return <main className="app-shell flex min-h-screen items-center justify-center px-5 py-10 text-[#352820]" data-theme={theme}><section className="welcome-card w-full max-w-md rounded-3xl border bg-white p-8 text-center shadow-xl">{joinError ? <><h1 className="text-xl font-semibold">Could not join the office</h1><p role="alert" className="my-4 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{joinError}</p><button className="w-full rounded-xl bg-[#bd674b] px-4 py-3 font-semibold text-white" onClick={retryJoin}>Retry connection</button><button className="mt-3 text-sm underline" onClick={() => { void signOut(); }}>Sign out</button></> : <><Activity className="mx-auto mb-3 animate-pulse text-[#bd674b]" size={24} /><h1 className="text-xl font-semibold">Joining ProxiSpeak…</h1><p className="mt-2 text-sm text-[#887665]">Connecting your account to the virtual office.</p></>}</section></main>;
+  if (!isRegistered) return <main className="app-shell flex min-h-screen items-center justify-center px-5 py-10 text-[#352820]" data-theme={theme}><section className="welcome-card w-full max-w-md rounded-3xl border bg-white p-8 text-center shadow-xl">{joinError ? <><h1 className="text-xl font-semibold">Could not join the office</h1><p role="alert" className="my-4 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{joinError}</p><button className="w-full rounded-xl bg-[#bd674b] px-4 py-3 font-semibold text-white" onClick={retryJoin}>Retry connection</button>{enterOfflineMode && <button className="mt-3 block w-full text-xs text-[#a7533b] underline hover:text-[#8c422c]" onClick={enterOfflineMode}>Continue in offline workspace preview</button>}<button className="mt-3 text-sm underline text-slate-500" onClick={() => { void signOut(); }}>Sign out</button></> : <><Activity className="mx-auto mb-3 animate-pulse text-[#bd674b]" size={24} /><h1 className="text-xl font-semibold">Joining ProxiSpeak…</h1><p className="mt-2 text-sm text-[#887665]">Connecting your account to the virtual office.</p></>}</section></main>;
 
   return (
     <div className="app-shell min-h-screen bg-[#f4eee4] text-[#352820]" data-theme={theme}>

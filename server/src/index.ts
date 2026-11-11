@@ -9,7 +9,7 @@ import { roomManager } from './roomManager';
 import { closePersistence, initializePersistence, persistUser } from './persistence';
 import mongoose from 'mongoose';
 import { UserModel } from './models/User';
-import { authRouter, authenticateSocketCookie, devAccounts, requiredAuth, setAuthSocketServer } from './auth';
+import { authRouter, authenticateSocketCookie, devAccounts, requiredAuth, setAuthSocketServer, isAllowedOrigin } from './auth';
 import { AccountModel } from './models/Account';
 import { AuthSessionModel } from './models/AuthSession';
 
@@ -21,10 +21,10 @@ const startTime = Date.now();
 const corsOptions: cors.CorsOptions = {
   credentials: true,
   origin(origin, callback) {
-    if (!origin || CLIENT_ORIGINS.includes(origin)) return callback(null, true);
-    return callback(new Error('Origin is not allowed by CORS'));
+    if (isAllowedOrigin(origin)) return callback(null, true);
+    return callback(new Error(`Origin '${origin}' is not allowed by CORS`));
   },
-  methods: ['GET', 'POST']
+  methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS']
 };
 
 app.use(cors(corsOptions));
@@ -106,9 +106,13 @@ setAuthSocketServer(io);
 io.use(async (socket, next) => {
   try {
     const origin = socket.handshake.headers.origin;
-    if (origin && !CLIENT_ORIGINS.includes(origin)) return next(new Error('Origin is not allowed.'));
+    if (origin && !isAllowedOrigin(origin)) return next(new Error('Origin is not allowed.'));
+    const authToken = (socket.handshake.auth && typeof socket.handshake.auth.token === 'string') ? socket.handshake.auth.token : undefined;
+    const authHeader = socket.handshake.headers.authorization;
+    const cookieHeader = socket.handshake.headers.cookie;
+
     if (mongoose.connection.readyState !== 1) {
-      const identity = await authenticateSocketCookie(socket.handshake.headers.cookie);
+      const identity = await authenticateSocketCookie(cookieHeader, authHeader, authToken);
       if (identity) {
         const acc = devAccounts.get(identity.accountId);
         socket.data.accountId = identity.accountId;
@@ -125,7 +129,7 @@ io.use(async (socket, next) => {
       socket.data.avatarUrl = '';
       return next();
     }
-    const identity = await authenticateSocketCookie(socket.handshake.headers.cookie);
+    const identity = await authenticateSocketCookie(cookieHeader, authHeader, authToken);
     if (!identity) return next(new Error('Authentication required. Please sign in again.'));
     const account = await AccountModel.findById(identity.accountId).select('fullName username avatarUrl emailVerified');
     if (!account || !account.emailVerified) return next(new Error('Authentication required. Please sign in again.'));

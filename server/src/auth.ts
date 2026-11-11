@@ -20,8 +20,21 @@ for (const method of ['get', 'post', 'patch'] as const) {
   (router as unknown as Record<string, (...args: unknown[]) => Router>)[method] = (...args) => register(args[0], ...args.slice(1).map((handler) => wrapAsync(handler as RequestHandler)));
 }
 const allowedOrigins = (process.env.CLIENT_ORIGIN || 'http://localhost:5173').split(',').map(value => value.trim());
+
+export function isAllowedOrigin(origin?: string): boolean {
+  if (!origin) return true;
+  if (allowedOrigins.includes(origin)) return true;
+  // Dynamically allow Vercel production and preview deployment origins
+  if (/^https:\/\/[a-z0-9-]+(?:\.[a-z0-9-]+)*\.vercel\.app$/i.test(origin)) return true;
+  // Allow localhost & 127.0.0.1 across any port
+  if (/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)) return true;
+  return false;
+}
+
 router.use((req, res, next) => {
-  if (['POST', 'PATCH'].includes(req.method) && (!req.headers.origin || !allowedOrigins.includes(req.headers.origin))) return fail(res, 403, 'Request origin is not allowed.');
+  if (['POST', 'PATCH'].includes(req.method) && !isAllowedOrigin(req.headers.origin)) {
+    return fail(res, 403, 'Request origin is not allowed.');
+  }
   next();
 });
 const COOKIE = 'proxispeak_session';
@@ -41,8 +54,24 @@ const publicProfile = (account: AccountRecord & { _id: Types.ObjectId; createdAt
   createdAt: account.createdAt, updatedAt: account.updatedAt
 });
 type AuthedRequest = Request & { auth?: { account: AccountRecord & { _id: Types.ObjectId; createdAt: Date; updatedAt: Date }; session: AuthSessionRecord & { _id: Types.ObjectId } } };
-const cookieValue = (req: Request) => req.headers.cookie?.split(';').map((item) => item.trim()).find((item) => item.startsWith(`${COOKIE}=`))?.slice(COOKIE.length + 1);
-const cookieOptions = (maxAge: number) => `Path=/; HttpOnly; SameSite=Strict; Max-Age=${Math.max(0, Math.floor(maxAge / 1000))}${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`;
+const tokenValue = (req: Request) => {
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    return authHeader.slice(7).trim();
+  }
+  return req.headers.cookie?.split(';').map((item) => item.trim()).find((item) => item.startsWith(`${COOKIE}=`))?.slice(COOKIE.length + 1);
+};
+const cookieValue = tokenValue;
+
+const isProduction = process.env.NODE_ENV === 'production';
+const cookieOptions = (maxAge: number) => {
+  const maxAgeSec = Math.max(0, Math.floor(maxAge / 1000));
+  if (isProduction) {
+    // Cross-site cookie configuration for Vercel frontend + separate backend domain
+    return `Path=/; HttpOnly; SameSite=None; Secure; Partitioned; Max-Age=${maxAgeSec}`;
+  }
+  return `Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSec}`;
+};
 export interface DevAccount {
   id: string;
   fullName: string;
@@ -60,7 +89,7 @@ export interface DevAccount {
 export const devAccounts = new Map<string, DevAccount>();
 export const devSessions = new Map<string, { accountId: string; lastActivityAt: Date; expiresAt: Date }>();
 
-async function issueSession(res: Response, accountId: Types.ObjectId | string) {
+async function issueSession(res: Response, accountId: Types.ObjectId | string): Promise<string> {
   const token = randomBytes(32).toString('base64url');
   const now = new Date();
   if (mongoose.connection.readyState !== 1) {
@@ -70,16 +99,23 @@ async function issueSession(res: Response, accountId: Types.ObjectId | string) {
       expiresAt: new Date(now.getTime() + SESSION_MS)
     });
     res.setHeader('Set-Cookie', `${COOKIE}=${token}; ${cookieOptions(SESSION_MS)}`);
-    return;
+    return token;
   }
   await AuthSessionModel.deleteMany({ accountId, expiresAt: { $lte: new Date() } });
   if (!process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 32) throw new Error('SESSION_SECRET must be at least 32 characters.');
   await AuthSessionModel.create({ accountId, tokenHash: sessionHash(token), lastActivityAt: now, expiresAt: new Date(now.getTime() + SESSION_MS) });
   await AccountModel.updateOne({ _id: accountId }, { $set: { lastSeenAt: now } });
   res.setHeader('Set-Cookie', `${COOKIE}=${token}; ${cookieOptions(SESSION_MS)}`);
+  return token;
 }
-export async function authenticateSocketCookie(cookieHeader?: string) {
-  const token = cookieHeader?.split(';').map((item) => item.trim()).find((item) => item.startsWith(`${COOKIE}=`))?.slice(COOKIE.length + 1);
+export async function authenticateSocketCookie(cookieHeader?: string, authHeader?: string, explicitToken?: string) {
+  let token = explicitToken;
+  if (!token && authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.slice(7).trim();
+  }
+  if (!token && cookieHeader) {
+    token = cookieHeader.split(';').map((item) => item.trim()).find((item) => item.startsWith(`${COOKIE}=`))?.slice(COOKIE.length + 1);
+  }
   if (!token) return null;
   if (mongoose.connection.readyState !== 1) {
     const session = devSessions.get(sessionHash(decodeURIComponent(token)));
@@ -201,8 +237,8 @@ router.post('/register', async (req, res) => {
       updatedAt: new Date()
     };
     devAccounts.set(id, devAcc);
-    await issueSession(res, id);
-    return res.status(201).json({ user: devAcc, message: 'Account created successfully (dev mode).' });
+    const token = await issueSession(res, id);
+    return res.status(201).json({ user: devAcc, token, message: 'Account created successfully (dev mode).' });
   }
   if (!emailProviderReady()) return fail(res, 503, 'Email verification is not configured. Add OTP_SECRET, RESEND_API_KEY, and EMAIL_FROM to the server environment.');
   let createdId: Types.ObjectId | undefined;
@@ -225,13 +261,13 @@ router.post('/email/verify', async (req, res) => {
   if (mongoose.connection.readyState !== 1) {
     const devAcc = Array.from(devAccounts.values()).find(a => a.email === email);
     if (!devAcc) return fail(res, 400, 'That code is invalid or expired.');
-    await issueSession(res, devAcc.id);
-    return res.json({ user: devAcc });
+    const token = await issueSession(res, devAcc.id);
+    return res.json({ user: devAcc, token });
   }
   if (!await verifyCode(email, 'verify', code)) return fail(res, 400, 'That code is invalid or expired. Request a new one.');
   const account = await AccountModel.findOneAndUpdate({ email }, { $set: { emailVerified: true } }, { new: true });
   if (!account) return fail(res, 400, 'That code is invalid or expired. Request a new one.');
-  await issueSession(res, account._id); res.json({ user: publicProfile(account as never) });
+  const token = await issueSession(res, account._id); res.json({ user: publicProfile(account as never), token });
 });
 router.post('/email/verify/request', async (req, res) => {
   const email = emailOf(req.body?.email); if (!validEmail(email)) return fail(res, 400, 'Enter a valid email address.');
@@ -298,12 +334,12 @@ router.post('/login', async (req, res) => {
       };
       devAccounts.set(id, devAcc);
     }
-    await issueSession(res, devAcc.id);
-    return res.json({ user: devAcc });
+    const token = await issueSession(res, devAcc.id);
+    return res.json({ user: devAcc, token });
   }
   const account = await AccountModel.findOne({ $or: [{ email: identity }, { username: identity }] }).select('+passwordHash');
   if (!account || !account.emailVerified || !await verifyPassword(password, account.passwordHash)) return fail(res, 401, 'Sign-in failed. Check your details or verify your email.');
-  await issueSession(res, account._id); res.json({ user: publicProfile(account as never) });
+  const token = await issueSession(res, account._id); res.json({ user: publicProfile(account as never), token });
 });
 router.get('/me', requiredAuth, (req, res) => { const auth = (req as AuthedRequest).auth!; const idleMs = Date.now() - auth.session.lastActivityAt.getTime(); res.json({ user: publicProfile(auth.account), session: { expiresAt: auth.session.expiresAt, idleMs, warnInMs: Math.max(0, WARN_MS - idleMs), expiresInMs: Math.max(0, SESSION_MS - idleMs), idleTimeoutMs: SESSION_MS, warningMs: WARN_MS } }); });
 router.post('/activity', requiredAuth, async (req, res) => {

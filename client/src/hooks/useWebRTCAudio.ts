@@ -40,6 +40,7 @@ export interface UseWebRTCAudioResult {
   activeStreamCount: number;
   switchRoom: (roomId: string) => void;
   setAudioOutputDevice: (sinkId: string) => Promise<void>;
+  enterOfflineMode?: () => void;
 }
 
 export function useWebRTCAudio(
@@ -864,6 +865,12 @@ export function useWebRTCAudio(
     }
   }, []);
 
+  const enterOfflineMode = useCallback(() => {
+    setIsRegistered(true);
+    setJoinError(null);
+    setLocalSocketId((current) => current || `preview-${Math.random().toString(36).substring(2, 7)}`);
+  }, []);
+
   return {
     localSocketId,
     isConnected,
@@ -886,6 +893,7 @@ export function useWebRTCAudio(
     culledPeerCount,
     activeStreamCount,
     switchRoom,
-    setAudioOutputDevice
+    setAudioOutputDevice,
+    enterOfflineMode
   };
 }

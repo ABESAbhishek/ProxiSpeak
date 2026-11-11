@@ -5,16 +5,28 @@ import type {
   WebRTCIceCandidatePayload,
   UserJoinPayload
 } from '../types';
+import { getBaseUrl, getStoredAuthToken } from './authApi';
 
-const SERVER_URL = import.meta.env.VITE_SOCKET_URL || import.meta.env.VITE_SERVER_URL || `${window.location.protocol}//${window.location.hostname}:3001`;
+const getSocketUrl = (): string => {
+  const base = getBaseUrl();
+  if (base) return base;
+  if (typeof window !== 'undefined') {
+    return window.location.origin;
+  }
+  return 'http://localhost:3001';
+};
 
 /**
  * Singleton Socket.io client connection to avoid duplicate sockets.
  */
-export const socket: Socket = io(SERVER_URL, {
+export const socket: Socket = io(getSocketUrl(), {
   autoConnect: false,
   reconnection: true,
   withCredentials: true,
+  auth: (cb) => {
+    const token = getStoredAuthToken();
+    cb(token ? { token } : {});
+  },
   reconnectionAttempts: 10,
   reconnectionDelay: 1000
 });
